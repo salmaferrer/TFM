@@ -1,0 +1,4015 @@
+---
+title: "tfm"
+output: html_document
+date: "2024-09-16"
+---
+
+
+R script for the master's thesis: The inflation dynamics in the European Union.
+Author: Salma Ferrer.
+
+```{r}
+library(tidyverse)
+library(readr)
+library(dplyr)
+library(urca)
+library(rugarch)
+library(modelsummary)
+library(forecast)
+```
+
+#SPAIN 
+```{r}
+spain <- read_csv("spain.csv",col_names = FALSE)
+serie = window(ts(spain,start=2004,frequency=12,end=2024))
+plot(serie)
+abline(h=mean(serie),col=2)
+```
+
+```{r}
+boxplot(serie_central~floor(time(serie_central))) #variance seems constant. 
+```
+
+```{r}
+m = apply (matrix(serie,nr=12),2,mean)
+v = apply(matrix(serie,nr=12),2,var)
+plot(m,v,xlab = "Medias anuales",ylab= "Varianzas anuales",main="serie")
+```
+
+```{r}
+m=apply(matrix(serie,ncol=25),2,mean)
+v=apply(matrix(serie,ncol=25),2,var)
+plot(v~m,main="Mean-Variance plot")
+```
+Seasonality
+```{r}
+monthplot(serie)
+```
+
+```{r}
+acf(serie,ylim=c(-1,1),lag.max=60,col=c(2,rep(1,11)))
+```
+ACF decreases very slowly, the series is not stationary. 
+
+```{r}
+plot(decompose(serie))
+```
+No es stationary, y hay seasonality de s=12 meses. + el trend parece linear: comparado con 2015, cada vez hay más inflación
+
+```{r}
+spain.df<-ur.df(serie, type = c("trend"), lags=20, selectlags = c("AIC"))
+summary(spain.df)	
+```
+NO es stationary. abs(2.58) es más pequeño que abs(3.43), entonces no rechazamos la H0 y THERE IS A UNIT ROOT. el trend es significante tmb, hay un deterministic trend. 
+
+
+1 difference regular 
+```{r}
+d1serie=diff(serie)
+plot(d1serie)
+abline(h=0)
+```
+2 regular differences
+```{r}
+d1d1serie=diff(d1serie)
+plot(d1d1serie)
+abline(h=0)
+```
+
+```{r}
+d12serie=diff(serie,12)
+plot(d12serie)
+abline(h=0)
+abline(h=mean(d12serie),col=2)
+```
+
+```{r}
+d12d1serie=diff(d1serie,12) # 1 seasonal al 1 regular
+plot(d12d1serie)
+abline(h=0)
+abline(h=mean(d12d1serie),col=2)
+```
+
+Varianzas
+```{r}
+var(serie,na.rm=T)
+var(d1serie,na.rm=T) 
+var(d1d1serie, na.rm=T)
+var(d12serie, na.rm=T) 
+var(d12d1serie, na.rm=T) #THIS ONE. Una regular difference, y una seasonal difference. 
+var(diff(d12d1serie,12))
+var(diff(d1d1serie,12), na.rm=T)
+``` 
+
+
+```{r}
+#check squared residuals, for heteroskedasticity variance. 
+serie2 <- serie^2
+par(mfrow=c(1,2))
+acf(serie2,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72)
+pacf(serie2,ylim=c(-1,1),col=c(rep(1,11),2),lwd=2,lag.max=72)
+```
+
+
+```{r}
+ur.df(d1serie, type = c("trend"), lags=20, selectlags = c("AIC"))
+summary(ur.df(d1serie, type = c("trend"), lags=20, selectlags = c("AIC")))	
+```
+
+##arima Spain
+
+```{r}
+par(mfrow=c(1,2))
+acf(d1serie,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72)
+pacf(d1serie,ylim=c(-1,1),col=c(rep(1,11),2),lwd=2,lag.max=72)
+```
+
+First model
+```{r}
+(mod=arima(d12d1serie,order=c(1,0,1),seasonal=list(order=c(0,0,1),period=12)))
+abs(mod$coef/sqrt(diag(mod$var.coef)))
+```
+Intercept is non-significant. NON-STATIONARY (assume mean = 0). 
+
+```{r}
+(mod1=arima(serie,order=c(1,1,1),seasonal=list(order=c(0,1,1),period=12)))
+abs(mod1$coef/sqrt(diag(mod1$var.coef)))
+```
+
+```{r}
+(mod11=arima(serie,order=c(5,1,0),seasonal=list(order=c(0,1,1),period=12)))
+abs(mod11$coef/sqrt(diag(mod11$var.coef)))
+```
+BEST MODELS --> ARMA(1,1) + SMA(1) 
+and               AR(5) + SMA(1)
+
+
+Second model
+```{r}
+(mod2=arima(serie,order=c(1,1,1),seasonal=list(order=c(1,1,0),period=12)))
+abs(mod2$coef/sqrt(diag(mod2$var.coef)))
+```
+
+Third model
+
+```{r}
+(mod3=arima(serie,order=c(0,1,1),seasonal=list(order=c(1,1,0),period=12)))
+abs(mod3$coef/sqrt(diag(mod3$var.coef)))
+```
+
+Fourth model
+
+```{r}
+(mod4=arima(serie,order=c(0,1,1),seasonal=list(order=c(0,1,1),period=12)))
+abs(mod4$coef/sqrt(diag(mod4$var.coef)))
+```
+
+```{r}
+AIC(mod1,k = log(length(serie)))
+AIC(mod11,k = log(length(serie)))
+AIC(mod2,k = log(length(serie)))
+AIC(mod3,k = log(length(serie)))
+AIC(mod4,k = log(length(serie)))
+```
+
+
+FIRST MODEL LOWEST AIC --> ARMA(1,1), SMA(1)
+
+VALIDATION 
+(function taken from Time Series analysis course notes, MESIO)
+```{r}
+#################Validation#################################
+validation=function(model,dades){
+  s=frequency(get(model$series))
+  resid=model$residuals
+  par(mfrow=c(2,2),mar=c(3,3,3,3))
+  #Residuals plot
+  plot(resid,main="Residuals")
+  abline(h=0)
+  abline(h=c(-3*sd(resid),3*sd(resid)),lty=3,col=4)
+  #Square Root of absolute values of residuals (Homocedasticity)
+  scatter.smooth(sqrt(abs(resid)),main="Square Root of Absolute residuals",
+                 lpars=list(col=2))
+  
+  #Normal plot of residuals
+  qqnorm(resid)
+  qqline(resid,col=2,lwd=2)
+  
+  ##Histogram of residuals with normal curve
+  hist(resid,breaks=20,freq=FALSE)
+  curve(dnorm(x,mean=mean(resid),sd=sd(resid)),col=2,add=T)
+  
+  
+  #ACF & PACF of residuals
+  par(mfrow=c(1,2))
+  acf(resid,ylim=c(-1,1),lag.max=60,col=c(2,rep(1,s-1)),lwd=1)
+  pacf(resid,ylim=c(-1,1),lag.max=60,col=c(rep(1,s-1),2),lwd=1)
+  par(mfrow=c(1,1))
+  
+  #ACF & PACF of square residuals 
+  par(mfrow=c(1,2))
+  acf(resid^2,ylim=c(-1,1),lag.max=60,col=c(2,rep(1,s-1)),lwd=1)
+  pacf(resid^2,ylim=c(-1,1),lag.max=60,col=c(rep(1,s-1),2),lwd=1)
+  par(mfrow=c(1,1))
+  
+  #Ljung-Box p-values
+  par(mar=c(2,2,1,1))
+  tsdiag(model,gof.lag=7*s)
+  cat("\n--------------------------------------------------------------------\n")
+  print(model)
+  
+  #Stationary and Invertible
+  cat("\nModul of AR Characteristic polynomial Roots: ", 
+      Mod(polyroot(c(1,-model$model$phi))),"\n")
+  cat("\nModul of MA Characteristic polynomial Roots: ",
+      Mod(polyroot(c(1,model$model$theta))),"\n")
+  
+  #Model expressed as an MA infinity (psi-weights)
+  psis=ARMAtoMA(ar=model$model$phi,ma=model$model$theta,lag.max=36)
+  names(psis)=paste("psi",1:36)
+  cat("\nPsi-weights (MA(inf))\n")
+  cat("\n--------------------\n")
+  print(psis[1:20])
+  
+  #Model expressed as an AR infinity (pi-weights)
+  pis=-ARMAtoMA(ar=-model$model$theta,ma=-model$model$phi,lag.max=36)
+  names(pis)=paste("pi",1:36)
+  cat("\nPi-weights (AR(inf))\n")
+  cat("\n--------------------\n")
+  print(pis[1:20])
+ 
+  cat("\nNormality Tests\n")
+  cat("\n--------------------\n")
+ 
+  ##Shapiro-Wilks Normality test
+  print(shapiro.test(resid(model)))
+
+  suppressMessages(require(nortest,quietly=TRUE,warn.conflicts=FALSE))
+  ##Anderson-Darling test
+  print(ad.test(resid(model)))
+  
+  suppressMessages(require(tseries,quietly=TRUE,warn.conflicts=FALSE))
+  ##Jarque-Bera test
+  print(jarque.bera.test(resid(model)))
+  
+  cat("\nHomoscedasticity Test\n")
+  cat("\n--------------------\n")
+  suppressMessages(require(lmtest,quietly=TRUE,warn.conflicts=FALSE))
+  ##Breusch-Pagan test
+  obs=get(model$series)
+  print(bptest(resid(model)~I(obs-resid(model))))
+  
+  cat("\nIndependence Tests\n")
+  cat("\n--------------------\n")
+  
+  ##Durbin-Watson test
+  print(dwtest(resid(model)~I(1:length(resid(model)))))
+  
+  ##Ljung-Box test
+  cat("\nLjung-Box test\n")
+  print(t(apply(matrix(c(1:4,(1:4)*s)),1,function(el) {
+    te=Box.test(resid(model),type="Ljung-Box",lag=el)
+    c(lag=(te$parameter),statistic=te$statistic[[1]],p.value=te$p.value)})))
+  
+  
+  #Sample ACF vs. Teoric ACF
+  par(mfrow=c(2,2),mar=c(3,3,3,3))
+  acf(dades, ylim=c(-1,1) ,lag.max=36,main="Sample ACF")
+  
+  plot(ARMAacf(model$model$phi,model$model$theta,lag.max=36),ylim=c(-1,1), 
+       type="h",xlab="Lag",  ylab="", main="ACF Teoric")
+  abline(h=0)
+  
+  #Sample PACF vs. Teoric PACF
+  pacf(dades, ylim=c(-1,1) ,lag.max=36,main="Sample PACF")
+  
+  plot(ARMAacf(model$model$phi,model$model$theta,lag.max=36, pacf=T),ylim=c(-1,1),
+       type="h", xlab="Lag", ylab="", main="PACF Teoric")
+  abline(h=0)
+  par(mfrow=c(1,1))
+}
+################# Fi Validaci? #################################
+```
+
+```{r}
+dades=d12d1serie
+model=mod1
+validation(model,dades)
+```
+ 
+```{r}
+dades=d12d1serie
+model=mod11
+validation(model,dades)
+```
+
+# ITALY
+
+```{r}
+italy <- read_csv("italy.csv",col_names = FALSE)
+serie2 = window(ts(italy,start=2004,frequency=12,end=2024))
+plot(serie2)
+abline(h=mean(serie2),col=2)
+```
+```{r}
+boxplot(serie2~floor(time(serie2)))
+```
+
+```{r}
+monthplot(serie2)
+```
+Some seasonality in Italy's series. 
+```{r}
+acf(serie2,ylim=c(-1,1),lag.max=60,col=c(2,rep(1,11)))
+```
+Definitivamente no es stationary.
+
+```{r}
+italy.df<-ur.df(serie2, type = c("trend"), lags=20, selectlags = c("AIC"))
+summary(italy.df)	
+```
+
+```{r}
+plot(decompose(serie2))
+```
+
+
+```{r}
+# 1 regular differencing
+d1serie2=diff(serie2)
+plot(d1serie2)
+abline(h=0)
+abline(h=mean(d1serie2),col=2) # aun no. 
+```
+```{r}
+# 2 regular differences. 
+d1d1serie2=diff(d1serie2)
+plot(d1d1serie2)
+abline(h=0)
+abline(h=mean(d1d1serie2),col=2)
+```
+
+```{r}
+d12serie2=diff(serie2,12)
+plot(d12serie2)
+abline(h=0)
+abline(h=mean(d12serie2),col=2)
+```
+```{r}
+d12d1serie2=diff(d12serie2)
+plot(d12d1serie2)
+abline(h=0)
+abline(h=mean(d12d1serie2),col=2)
+```
+```{r}
+d12d1d1serie2=diff(d12d1serie2)
+plot(d12d1d1serie2)
+abline(h=0)
+abline(h=mean(d12d1d1serie2),col=2)
+```
+Comparison
+
+```{r}
+var(serie2)
+var(d1serie2)
+var(d1d1serie2)
+var(d12serie2)
+var(d12d1serie2) # this one
+var(d12d1d1serie2)
+```
+
+One regular difference and one seasonal difference. 
+
+```{r}
+italyy.df<-ur.df(d12d1serie2, type = c("trend"), lags=20, selectlags = c("AIC"))
+summary(italyy.df)	
+```
+
+## arima Italy
+
+```{r}
+par(mfrow=c(1,2))
+acf(d12d1serie2,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72)
+pacf(d12d1serie2,ylim=c(-1,1),col=c(rep(1,11),2),lwd=2,lag.max=72)
+```
+SMA(1)
+AR(4), MA(4) 
+ARMA(1,1)
+
+AR(4)
+```{r}
+(moditaly=arima(d12d1serie2,order=c(4,0,0),seasonal=list(order=c(1,0,0),period=12)))
+abs(moditaly$coef/sqrt(diag(moditaly$var.coef)))
+```
+
+```{r}
+(moditaly1=arima(serie2,order=c(4,1,0),seasonal=list(order=c(1,1,0),period=12)))
+abs(moditaly1$coef/sqrt(diag(moditaly1$var.coef)))
+```
+
+```{r}
+(moditaly2=arima(serie2,order=c(1,1,1),seasonal=list(order=c(1,1,0),period=12)))
+abs(moditaly2$coef/sqrt(diag(moditaly2$var.coef)))
+```
+
+```{r}
+(moditaly3=arima(serie2,order=c(0,1,4),seasonal=list(order=c(1,1,0),period=12)))
+abs(moditaly3$coef/sqrt(diag(moditaly3$var.coef)))
+```
+
+```{r}
+(moditaly4=arima(serie2,order=c(9,1,0),seasonal=list(order=c(0,1,1),period=12), method="ML"))
+abs(moditaly4$coef/sqrt(diag(moditaly4$var.coef)))
+```
+
+el de MA(4) en el regular no sale bien. 
+```{r}
+(moditaly5=arima(serie2,order=c(1,1,1),seasonal=list(order=c(1,1,0),period=12)))
+abs(moditaly5$coef/sqrt(diag(moditaly5$var.coef)))
+```
+
+```{r}
+AIC(moditaly1,k = log(length(serie2)))
+AIC(moditaly2,k = log(length(serie2)))
+AIC(moditaly3,k = log(length(serie2)))
+AIC(moditaly4,k = log(length(serie2)))
+AIC(moditaly5,k = log(length(serie2)))
+```
+
+
+```{r}
+model = moditaly2
+dades = d12d1serie2
+validation(model,dades)
+```
+
+# GERMANY
+
+```{r}
+germany <- read_csv("germany.csv",col_names = FALSE)
+serie3 = window(ts(germany,start=2004,frequency=12,end=2024))
+plot(serie3) # germany se ve mucho más estable, menos fluctuaciones bruscas. 
+```
+```{r}
+boxplot(serie3~floor(time(serie3)))
+```
+
+```{r}
+monthplot(serie3)
+```
+
+```{r}
+acf(serie3,ylim=c(-1,1),lag.max=60,col=c(2,rep(1,11)))
+```
+
+```{r}
+plot(decompose(serie3))
+```
+```{r}
+germany.df<-ur.df(serie3, type = c("trend"), lags=20, selectlags = c("AIC"))
+summary(germany.df)	
+```
+No reject H0. Non-stationary. 
+
+```{r}
+d1serie3=diff(serie3)
+plot(d1serie3)
+abline(h=0)
+abline(h=mean(d1serie3),col=2) # aun no. 
+```
+```{r}
+d1d1serie3=diff(d1serie3)
+plot(d1d1serie3)
+abline(h=0)
+abline(h=mean(d1d1serie3),col=2) # aun no. 
+```
+
+```{r}
+d1d1d12serie3=diff(d1d1serie3,12)
+plot(d1d1d12serie3)
+abline(h=0)
+abline(h=mean(d1d1d12serie3),col=2) # aun no. 
+```
+
+
+```{r}
+d12serie3=diff(serie3, 12)
+plot(d12serie3)
+abline(h=mean(d12serie3),col=2) # aun no. 
+```
+```{r}
+d12d1serie3=diff(d12serie3)
+plot(d12d1serie3)
+abline(h=0)
+abline(h=mean(d12d1serie3),col=2) # aun no. 
+```
+
+```{r}
+d12d1d1serie3=diff(d12d1serie3)
+plot(d12d1d1serie3)
+abline(h=0)
+abline(h=mean(d12d1d1serie3),col=2) 
+```
+
+
+```{r}
+var(serie3, na.rm=T)
+var(d1serie3, na.rm=T)
+var(d1d1serie3, na.rm=T)
+var(d12serie3, na.rm=T)
+var(d12d1serie3, na.rm=T) #this one
+var(d12d1d1serie3,na.rm=T)
+```
+
+Serie d12d1serie3 for Germany (1 regular and 1 seasonal difference)
+## ARIMA Germany
+```{r}
+par(mfrow=c(1,2))
+acf(d12d1serie3,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72)
+pacf(d12d1serie3,ylim=c(-1,1),col=c(rep(1,11),2),lwd=2,lag.max=72)
+```
+ARMA(1,1)
+MA(6)
+AR(12)
+SMA(1)
+
+```{r}
+(modger1=arima(serie3,order=c(1,1,1),seasonal=list(order=c(0,1,1),period=12)))
+abs(modger1$coef/sqrt(diag(modger1$var.coef)))
+```
+
+```{r}
+(modger2=arima(serie3,order=c(4,1,0),seasonal=list(order=c(0,1,1),period=12)))
+abs(modger2$coef/sqrt(diag(modger2$var.coef)))
+```
+
+```{r}
+AIC(modger2,k = log(length(serie3)))
+AIC(modger1,k = log(length(serie3)))
+AIC(modger3,k = log(length(serie3)))
+```
+
+```{r}
+(modger3=arima(serie3,order=c(0,1,6),seasonal=list(order=c(0,1,1),period=12)))
+abs(modger3$coef/sqrt(diag(modger3$var.coef)))
+```
+
+```{r}
+dades= d12d1serie3
+model = modger1
+validation(model,dades)
+```
+
+```{r}
+dades= d12d1serie3
+model = modger2
+validation(model,dades)
+```
+
+# GREECE
+
+```{r}
+greece <- read_csv("greece.csv",col_names = FALSE)
+serie4 = window(ts(greece,start=2004,frequency=12,end=2024))
+plot(serie4)
+abline(h=mean(serie4),col=2) 
+```
+
+```{r}
+boxplot(serie4~floor(time(serie4)))
+```
+
+```{r}
+monthplot(serie4)
+```
+
+Seasonality. 
+
+```{r}
+plot(decompose(serie4))
+```
+
+```{r}
+greece.df<-ur.df(serie4, type = c("trend"), lags=20, selectlags = c("AIC"))
+summary(greece.df)	
+```
+No reject H0. 
+
+```{r}
+d1serie4=diff(serie4)
+plot(d1serie4)
+abline(h=0)
+abline(h=mean(d1serie4),col=2)
+```
+```{r}
+d1d1serie4=diff(d1serie4)
+plot(d1d1serie4)
+abline(h=0)
+abline(h=mean(d1d1serie4),col=2)
+```
+
+```{r}
+d12d1serie4 = diff(d1serie4,12)
+plot(d12d1serie4)
+abline(h=0)
+abline(h=mean(d12d1serie4), col=4)
+```
+
+```{r}
+d12d1d1serie4 = diff(d12d1serie4)
+plot(d12d1d1serie4)
+abline(h=0)
+abline(h=mean(d12d1d1serie4), col=4)
+```
+```{r}
+d12serie4 = diff(serie4,12)
+plot(d12serie4)
+abline(h=0)
+abline(h=mean(d12serie4), col=4)
+```
+
+```{r}
+var(serie4)
+var(d1serie4)
+var(d1d1serie4)
+var(d12serie4)
+var(d12d1serie4) # this one.
+var(d12d1d1serie4)
+```
+
+
+```{r}
+greecee.df<-ur.df(d12d1serie4, type = c("trend"), lags=20, selectlags = c("AIC"))
+summary(greecee.df)	
+```
+Reject H0. It is stationary now. 
+
+```{r}
+par(mfrow=c(1,2))
+acf(d12d1serie4,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72)
+pacf(d12d1serie4,ylim=c(-1,1),col=c(rep(1,11),2),lwd=2,lag.max=72)
+```
+SAR(1), SMA(1)
+MA(3), AR(2)
+
+## ARIMA Greece
+```{r}
+(modgr=arima(serie4,order=c(1,1,1),seasonal=list(order=c(0,1,1),period=12)))
+abs(modgr$coef/sqrt(diag(modgr$var.coef)))
+```
+
+```{r}
+(modgr2=arima(serie4,order=c(0,1,3),seasonal=list(order=c(0,1,1),period=12)))
+abs(modgr2$coef/sqrt(diag(modgr2$var.coef)))
+```
+
+```{r}
+(modgr3=arima(serie4,order=c(3,1,0),seasonal=list(order=c(0,1,1),period=12)))
+abs(modgr3$coef/sqrt(diag(modgr3$var.coef)))
+```
+
+```{r}
+(modgr4=arima(serie4,order=c(0,1,0),seasonal=list(order=c(0,1,0),period=12)))
+abs(modgr4$coef/sqrt(diag(modgr4$var.coef)))
+```
+AR(2), SMA(1)
+
+```{r}
+AIC(modgr2,k = log(length(serie4)))
+AIC(modgr,k = log(length(serie4)))
+AIC(modgr3,k = log(length(serie4)))
+AIC(modgr4,k = log(length(serie4)))
+
+```
+
+```{r}
+dades= d12d1serie4
+model = modgr3
+validation(model,dades)
+```
+some clusters of volatility can be appreciated. 
+
+```{r}
+model =modgr3
+dades=d12d1serie4
+validation(model,dades)
+```
+
+# FRANCE
+
+```{r}
+france <- read_csv("france.csv",col_names = FALSE)
+serie5 = window(ts(france,start=2004,frequency=12,end=2024))
+plot(serie5)
+```
+
+```{r}
+boxplot(serie5~floor(time(serie5)))
+```
+
+
+```{r}
+boxplot(log(serie5)~floor(time(log(serie5))))
+```
+
+```{r}
+monthplot(serie5)
+```
+
+```{r}
+plot(decompose(serie5))
+```
+```{r}
+ts.plot(matrix(serie5,nrow=12))
+```
+
+
+```{r}
+france.df<-ur.df(serie5, type = c("trend"), lags=20, selectlags = c("AIC"))
+summary(france.df)	
+```
+NO REJECT. Unit root that makes the series non-stationary. 
+
+```{r}
+acf(serie5,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72)
+```
+Differentiation
+
+```{r}
+d1serie5=diff(serie5)
+plot(d1serie5)
+abline(h=0)
+abline(h=mean(d1serie5),col=2)
+```
+```{r}
+d1d1serie5=diff(d1serie5)
+plot(d1d1serie5)
+abline(h=0)
+abline(h=mean(d1d1serie5),col=2)
+```
+```{r}
+d12serie5=diff(serie5,12)
+plot(d12serie5)
+abline(h=0)
+abline(h=mean(d12serie5),col=2)
+```
+
+```{r}
+d12d1serie5=diff(d12serie5)
+plot(d12d1serie5)
+abline(h=0)
+abline(h=mean(d12d1serie5),col=2)
+```
+```{r}
+d12d1d1serie5 <- diff(d12d1serie5)
+```
+
+```{r}
+var(serie5)
+var(d1serie5)
+var(d1d1serie5)
+var(d12serie5)
+var(d12d1serie5) #this one.
+var(d12d1d1serie5)
+```
+
+```{r}
+france.df<-ur.df(d12d1serie5, type = c("trend"), lags=20, selectlags = c("AIC"))
+summary(france.df)	
+```
+
+```{r}
+par(mfrow=c(1,2))
+acf(d12d1serie5,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72)
+pacf(d12d1serie5,ylim=c(-1,1),col=c(rep(1,11),2),lwd=2,lag.max=72)
+```
+MA(4)
+ARMA(1,1)
+SMA(1)
+
+
+##ARIMA france
+
+```{r}
+(modfr=arima(serie5,order=c(1,1,1),seasonal=list(order=c(0,1,1),period=12)))
+abs(modfr$coef/sqrt(diag(modfr$var.coef)))
+```
+```{r}
+(modfr1=arima(serie5,order=c(0,1,4),seasonal=list(order=c(0,1,1),period=12)))
+abs(modfr1$coef/sqrt(diag(modfr1$var.coef)))
+```
+
+```{r}
+(modfr2=arima(serie5,order=c(4,1,0),seasonal=list(order=c(0,1,1),period=12)))
+abs(modfr2$coef/sqrt(diag(modfr2$var.coef)))
+```
+
+```{r}
+model=modfr
+dades=d12d1serie5
+validation(model,dades)
+```
+
+
+#PORTUGAL
+```{r}
+portugal <- read_csv("portugal.csv",col_names = FALSE)
+serie7 = window(ts(portugal,start=2004,frequency=12,end=2024))
+plot(serie7)
+```
+```{r}
+monthplot(serie7)
+plot(decompose(serie7))
+```
+
+```{r}
+portugal.df<-ur.df(serie7, type = c("trend"), lags=20, selectlags = c("AIC"))
+summary(portugal.df)	
+```
+no stationary. no reject null hypothesis
+
+```{r}
+portugal.pp<-ur.pp(serie7, type = c("Z-tau"), model = c("trend"), lags = c("long"))
+summary(portugal.pp)	
+```
+No reject. 
+
+```{r}
+par(mfrow=c(1,2))
+acf(serie7,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72)
+pacf(serie7,ylim=c(-1,1),col=c(rep(1,11),2),lwd=2,lag.max=72)
+```
+
+Clearly NON-STATIONARY. ACF decreases VERY slowly towards 0. 
+
+```{r}
+d1serie7 <- diff(serie7)
+```
+
+```{r}
+portugald1.pp<-ur.pp(d1serie7, type = c("Z-tau"), model = c("trend"), lags = c("long"))
+summary(portugald1.pp)	
+```
+REJECT.
+
+```{r}
+acf(d1serie7,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72)
+```
+
+Still looks non-stationary. 
+```{r}
+d12d1serie7 <- diff(d1serie7,12) 
+portugald12d1.pp<-ur.pp(d12d1serie7, type = c("Z-tau"), model = c("trend"), lags = c("long"))
+summary(portugald12d1.pp)	
+```
+```{r}
+summary(ur.df(d12d1serie7, type = c("trend"), lags=20, selectlags = c("AIC")))
+```
+d12d1serie7 final.
+
+##ARIMA Portugal
+```{r}
+par(mfrow=c(1,1))
+acf(d12d1serie7,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72)
+pacf(d12d1serie7,ylim=c(-1,1),col=c(rep(1,11),2),lwd=2,lag.max=72)
+```
+
+SMA(1). 
+Then, either ARMA(1,1), AR(2) or MA(2)
+
+
+```{r}
+(modp1=arima(serie7,order=c(1,1,1),seasonal=list(order=c(0,1,1),period=12)))
+abs(modp1$coef/sqrt(diag(modp1$var.coef)))
+```
+
+```{r}
+(modp2=arima(serie7,order=c(3,1,0),seasonal=list(order=c(0,1,1),period=12)))
+abs(modp2$coef/sqrt(diag(modp2$var.coef)))
+```
+
+
+```{r}
+(modp3=arima(serie7,order=c(0,1,2),seasonal=list(order=c(0,1,1),period=12)))
+abs(modp3$coef/sqrt(diag(modp3$var.coef)))
+```
+```{r}
+(modp4=arima(serie7,order=c(3,1,1),seasonal=list(order=c(0,1,1),period=12)))
+abs(modp4$coef/sqrt(diag(modp4$var.coef)))
+```
+```{r}
+(modp5=arima(serie7,order=c(3,1,1),seasonal=list(order=c(1,1,2),period=12)))
+abs(modp5$coef/sqrt(diag(modp5$var.coef)))
+```
+
+
+```{r}
+AIC(modp1,k = log(length(serie7)))
+AIC(modp2,k = log(length(serie7)))
+AIC(modp3,k = log(length(serie7)))
+AIC(modp4,k = log(length(serie7)))
+AIC(modp5,k = log(length(serie7)))
+```
+ARMA(1,1) SMA(1)
+
+```{r}
+model= modp1
+dades = d12d1serie7
+validation(model,dades)
+```
+
+
+#BELGIUM
+
+```{r}
+belgium <- read_csv("belgium.csv",col_names = FALSE)
+serie8 = window(ts(belgium,start=2004,frequency=12,end=2024))
+plot(serie8)
+```
+
+```{r}
+auto.arima(serie8)
+```
+
+
+```{r}
+summary(ur.df(serie8, type = c("trend"), lags=20, selectlags = c("AIC")))
+```
+```{r}
+summary(ur.pp(serie8, type = c("Z-tau"), model = c("trend"), lags = c("long")))
+```
+No.
+
+```{r}
+d1serie8 <- diff(serie8)
+summary(ur.pp(d1serie8, type = c("Z-tau"), model = c("trend"), lags = c("long")))
+```
+ACF looks like it has seasonal pattern. SEASONAL DIFFERENCING IS IMPORTANT. 
+```{r}
+acf(d1serie8)
+```
+
+```{r}
+d12d1serie8 <- diff(d1serie8,12)
+summary(ur.pp(d12d1serie8, type = c("Z-tau"), model = c("trend"), lags = c("long")))
+```
+```{r}
+par(mfrow=c(1,2))
+acf(d12d1serie8,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72)
+pacf(d12d1serie8,ylim=c(-1,1),col=c(rep(1,11),2),lwd=2,lag.max=72)
+```
+##ARIMA Belgium 
+```{r}
+(modbelgium=arima(serie8,order=c(1,1,1),seasonal=list(order=c(0,1,1),period=12)))
+abs(modbelgium$coef/sqrt(diag(modbelgium$var.coef)))
+```
+
+```{r}
+(modbelgium2=arima(serie8,order=c(0,1,3),seasonal=list(order=c(0,1,1),period=12)))
+abs(modbelgium2$coef/sqrt(diag(modbelgium2$var.coef)))
+```
+
+```{r}
+(modbelgium3=arima(serie8,order=c(3,1,0),seasonal=list(order=c(0,1,1),period=12)))
+abs(modbelgium3$coef/sqrt(diag(modbelgium3$var.coef)))
+```
+
+```{r}
+AIC(modbelgium,k = log(length(serie8)))
+AIC(modbelgium2,k = log(length(serie8)))
+AIC(modbelgium3,k = log(length(serie8)))
+```
+
+
+```{r}
+model = modbelgium3
+dades = d12d1serie8
+validation(model,dades)
+```
+
+
+#THE NETHERLANDS
+
+```{r}
+netherlands <- read_csv("netherlands.csv",col_names = FALSE)
+serie9 = window(ts(netherlands,start=2004,frequency=12,end=2024))
+plot(serie9)
+```
+
+```{r}
+auto.arima(serie9)
+```
+```{r}
+summary(ur.df(serie9, type = c("trend"), lags=20, selectlags = c("AIC")))
+
+```
+NO.
+```{r}
+summary(ur.pp(serie9, type = c("Z-tau"), model = c("trend"), lags = c("long")))
+```
+NO.
+```{r}
+d1serie9 <- diff(serie9)
+summary(ur.pp(d1serie9, type = c("Z-tau"), model = c("trend"), lags = c("long")))
+```
+YES. 
+```{r}
+summary(ur.df(d1serie9, type = c("trend"), lags=20, selectlags = c("AIC")))
+```
+YES. 
+
+```{r}
+var(d1serie9)
+var(d12d1serie9)
+```
+
+```{r}
+d12d1serie9 = diff(d1serie9,12)
+d12serie9 =diff(serie9,12)
+```
+
+```{r}
+par(mfrow=c(1,2))
+acf(d12d1serie9,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72)
+pacf(d12d1serie9,ylim=c(-1,1),col=c(rep(1,11),2),lwd=2,lag.max=72)
+```
+#ARIMA The Netherlands
+```{r}
+(modnet=arima(serie9,order=c(0,1,0),seasonal=list(order=c(0,1,1),period=12)))
+abs(modnet$coef/sqrt(diag(modnet$var.coef)))
+```
+```{r}
+(modnet2=arima(serie9,order=c(0,1,0),seasonal=list(order=c(0,1,2),period=12)))
+abs(modnet2$coef/sqrt(diag(modnet2$var.coef)))
+```
+
+```{r}
+(modnet3=arima(serie9,order=c(0,1,0),seasonal=list(order=c(2,1,0),period=12)))
+abs(modnet3$coef/sqrt(diag(modnet3$var.coef)))
+```
+
+
+```{r}
+model = modnet3
+dades=d12d1serie9
+validation(model,dades)
+```
+
+
+#AUSTRIA
+
+```{r}
+austria <- read_csv("austria.csv",col_names = FALSE)
+serie10 = window(ts(austria,start=2004,frequency=12,end=2024))
+plot(serie10)
+```
+
+```{r}
+summary(ur.df(serie10, type = c("trend"), lags=20, selectlags = c("AIC")))
+summary(ur.pp(serie10, type = c("Z-tau"), model = c("trend"), lags = c("long")))
+```
+NO.
+
+```{r}
+acf(diff(serie10,12))
+```
+
+```{r}
+d1serie10 = diff(serie10)
+summary(ur.df(d1serie10, type = c("trend"), lags=20, selectlags = c("AIC")))
+summary(ur.pp(d1serie10, type = c("Z-tau"), model = c("trend"), lags = c("long")))
+
+```
+
+```{r}
+par(mfrow=c(1,2))
+acf(d1serie10,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72)
+pacf(d1serie10,ylim=c(-1,1),col=c(rep(1,11),2),lwd=2,lag.max=72)
+
+```
+
+Seasonal differencing would help. 
+
+```{r}
+d12d1serie10 = diff(d1serie10,12)
+summary(ur.df(d12d1serie10, type = c("trend"), lags=20, selectlags = c("AIC")))
+summary(ur.pp(d12d1serie10, type = c("Z-tau"), model = c("trend"), lags = c("long")))
+
+```
+## ARIMA Austria
+```{r}
+par(mfrow=c(1,2))
+acf(d12d1serie10,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72)
+pacf(d12d1serie10,ylim=c(-1,1),col=c(rep(1,11),2),lwd=2,lag.max=72)
+
+```
+
+
+```{r}
+(modaustria=arima(serie10,order=c(1,1,1),seasonal=list(order=c(0,1,1),period=12)))
+abs(modaustria$coef/sqrt(diag(modaustria$var.coef)))
+```
+
+
+```{r}
+(modaustria2=arima(serie10,order=c(1,1,0),seasonal=list(order=c(0,1,1),period=12)))
+abs(modaustria2$coef/sqrt(diag(modaustria2$var.coef)))
+```
+```{r}
+(modaustria3=arima(serie10,order=c(0,1,1),seasonal=list(order=c(0,1,1),period=12)))
+abs(modaustria3$coef/sqrt(diag(modaustria3$var.coef)))
+```
+```{r}
+(modaustria4=arima(serie10,order=c(4,1,0),seasonal=list(order=c(0,1,1),period=12)))
+abs(modaustria4$coef/sqrt(diag(modaustria4$var.coef)))
+```
+
+```{r}
+(modaustria5=arima(serie10,order=c(0,1,4),seasonal=list(order=c(0,1,1),period=12)))
+abs(modaustria5$coef/sqrt(diag(modaustria5$var.coef)))
+```
+
+
+```{r}
+AIC(modaustria,k = log(length(serie10)))
+AIC(modaustria2,k = log(length(serie10)))
+AIC(modaustria3,k = log(length(serie10)))
+AIC(modaustria4,k = log(length(serie10)))
+AIC(modaustria5,k = log(length(serie10)))
+```
+AR(4) SMA(1)
+
+```{r}
+model = modaustria4
+dades=d12d1serie10
+validation(model,dades)
+```
+
+#FINLAND
+
+```{r}
+finland <- read_csv("finland.csv",col_names = FALSE)
+serie11 = window(ts(finland,start=2004,frequency=12,end=2024))
+plot(serie11)
+```
+
+```{r}
+summary(ur.df(serie11, type = c("trend"), lags=20, selectlags = c("AIC")))
+summary(ur.pp(serie11, type = c("Z-tau"), model = c("trend"), lags = c("long")))
+```
+NO
+
+```{r}
+acf(serie11,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72)
+auto.arima(serie11)
+```
+
+```{r}
+d1serie11 = diff(serie11)
+summary(ur.df(d1serie11, type = c("trend"), lags=20, selectlags = c("AIC")))
+summary(ur.pp(d1serie11, type = c("Z-tau"), model = c("trend"), lags = c("long")))
+```
+```{r}
+par(mfrow=c(1,2))
+acf(d1serie11,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72)
+pacf(d1serie11,ylim=c(-1,1),col=c(rep(1,11),2),lwd=2,lag.max=72)
+```
+NO seasonal differencing in this case.
+```{r}
+var(serie11)
+var(d1serie11)
+var(diff(d1serie11,12))
+```
+```{r}
+(modfinland=arima(serie11,order=c(1,1,1),seasonal=list(order=c(1,0,0),period=12)))
+abs(modfinland$coef/sqrt(diag(modfinland$var.coef)))
+```
+
+```{r}
+(modfinland2=arima(serie11,order=c(1,1,2),seasonal=list(order=c(1,0,1),period=12)))
+abs(modfinland2$coef/sqrt(diag(modfinland2$var.coef)))
+```
+```{r}
+model = modfinland2
+dades=d1serie11
+validation(model,dades)
+
+```
+
+#IRELAND
+
+```{r}
+ireland <- read_csv("ireland.csv",col_names = FALSE)
+serie12 = window(ts(ireland,start=2004,frequency=12,end=2024))
+plot(serie12)
+```
+
+```{r}
+summary(ur.df(serie12, type = c("trend"), lags=20, selectlags = c("AIC")))
+summary(ur.pp(serie12, type = c("Z-tau"), model = c("trend"), lags = c("long")))
+```
+```{r}
+d1serie12 = diff(serie12)
+summary(ur.df(d1serie12, type = c("trend"), lags=20, selectlags = c("AIC")))
+summary(ur.pp(d1serie12, type = c("Z-tau"), model = c("trend"), lags = c("long")))
+```
+
+```{r}
+d12d1serie12 <- diff(d1serie12, 12)
+var(d1serie12)
+var(d12d1serie12)
+```
+
+##ARIMA Ireland
+```{r}
+par(mfrow=c(1,2))
+acf(d12d1serie12,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72)
+pacf(d12d1serie12,ylim=c(-1,1),col=c(rep(1,11),2),lwd=2,lag.max=72)
+```
+
+```{r}
+(modireland=arima(serie12,order=c(1,1,1),seasonal=list(order=c(0,1,1),period=12)))
+abs(modireland$coef/sqrt(diag(modireland$var.coef)))
+```
+
+```{r}
+auto.arima(serie12)
+```
+
+```{r}
+model = modireland
+dades=d12d1serie12
+validation(model,dades)
+```
+
+
+#DENMARK
+
+```{r}
+denmark <- read_csv("denmark.csv",col_names = FALSE)
+serie13 = window(ts(denmark,start=2004,frequency=12,end=2024))
+plot(serie13)
+```
+
+```{r}
+auto.arima(serie13)
+```
+
+
+```{r}
+summary(ur.df(serie13, type = c("trend"), lags=20, selectlags = c("AIC")))
+summary(ur.pp(serie13, type = c("Z-tau"), model = c("trend"), lags = c("long")))
+```
+
+```{r}
+d1serie13 = diff(serie13)
+summary(ur.df(d1serie13, type = c("trend"), lags=20, selectlags = c("AIC")))
+summary(ur.pp(d1serie13, type = c("Z-tau"), model = c("trend"), lags = c("long")))
+```
+```{r}
+d12d1serie13 = diff(d1serie13,12)
+var(d1serie13)
+var(d12d1serie13)
+```
+
+##ARIMA Denmark
+```{r}
+par(mfrow=c(1,2))
+acf(d12d1serie13,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72)
+pacf(d12d1serie13,ylim=c(-1,1),col=c(rep(1,11),2),lwd=2,lag.max=72)
+```
+
+```{r}
+(moddenmark=arima(serie13,order=c(1,1,1),seasonal=list(order=c(0,1,1),period=12)))
+abs(moddenmark$coef/sqrt(diag(moddenmark$var.coef)))
+```
+
+```{r}
+(moddenmark2=arima(serie13,order=c(0,1,5),seasonal=list(order=c(0,1,1),period=12)))
+abs(moddenmark2$coef/sqrt(diag(moddenmark2$var.coef)))
+```
+```{r}
+(moddenmark3=arima(serie13,order=c(1,1,1),seasonal=list(order=c(0,1,1),period=12)))
+abs(moddenmark3$coef/sqrt(diag(moddenmark3$var.coef)))
+```
+
+```{r}
+(moddenmark4=arima(serie13,order=c(0,1,1),seasonal=list(order=c(1,0,0),period=12)))
+```
+
+```{r}
+AIC(moddenmark,k = log(length(serie13)))
+AIC(moddenmark2,k = log(length(serie13)))
+AIC(moddenmark3,k = log(length(serie13)))
+AIC(moddenmark4,k = log(length(serie13)))
+```
+
+
+```{r}
+model = moddenmark2
+dades = d12d1serie13
+validation(model,dades)
+```
+
+#SWEDEN
+```{r}
+sweden <- read_csv("sweden.csv",col_names = FALSE)
+serie14 = window(ts(sweden,start=2004,frequency=12,end=2024))
+plot(serie14)
+```
+
+```{r}
+summary(ur.df(serie14, type = c("trend"), lags=20, selectlags = c("AIC")))
+summary(ur.pp(serie14, type = c("Z-tau"), model = c("trend"), lags = c("long")))
+```
+```{r}
+d1serie14 = diff(serie14)
+summary(ur.df(d1serie14, type = c("trend"), lags=20, selectlags = c("AIC")))
+summary(ur.pp(d1serie14, type = c("Z-tau"), model = c("trend"), lags = c("long")))
+```
+```{r}
+acf(d1serie14,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72)
+```
+
+```{r}
+d12d1serie14 = diff(d1serie14, 12)
+var(d1serie14)
+var(d12d1serie14) # BETTER. 
+```
+
+## ARIMA Sweden
+```{r}
+par(mfrow=c(1,2))
+acf(d12d1serie14,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72)
+pacf(d12d1serie14,ylim=c(-1,1),col=c(rep(1,11),2),lwd=2,lag.max=72)
+```
+
+```{r}
+(modsweden=arima(serie14,order=c(1,1,1),seasonal=list(order=c(0,1,1),period=12)))
+abs(modsweden$coef/sqrt(diag(modsweden$var.coef)))
+```
+
+```{r}
+(modsweden2=arima(serie14,order=c(4,1,0),seasonal=list(order=c(0,1,1),period=12)))
+abs(modsweden2$coef/sqrt(diag(modsweden2$var.coef)))
+```
+
+```{r}
+(modsweden3=arima(serie14,order=c(0,1,4),seasonal=list(order=c(0,1,1),period=12)))
+abs(modsweden3$coef/sqrt(diag(modsweden3$var.coef)))
+```
+
+
+```{r}
+AIC(modsweden,k = log(length(serie14)))
+AIC(modsweden2,k = log(length(serie14)))
+AIC(modsweden3,k = log(length(serie14)))
+```
+
+```{r}
+model = modsweden2
+dades = d12d1serie14
+validation(model,dades)
+```
+
+#CZECH REPUBLIC
+
+```{r}
+czechia <- read_csv("czechia.csv",col_names = FALSE)
+serie15 = window(ts(czechia,start=2004,frequency=12,end=2024))
+plot(serie15)
+```
+
+```{r}
+summary(ur.df(serie15, type = c("trend"), lags=20, selectlags = c("AIC")))
+summary(ur.pp(serie15, type = c("Z-tau"), model = c("trend"), lags = c("long")))
+```
+NO.
+
+```{r}
+d1serie15 = diff(serie15)
+summary(ur.df(d1serie15, type = c("trend"), lags=20, selectlags = c("AIC")))
+summary(ur.pp(d1serie15, type = c("Z-tau"), model = c("trend"), lags = c("long")))
+```
+Yes.
+```{r}
+d12d1serie15 =diff(d1serie15,12)
+```
+
+## ARIMA Czech Republic
+```{r}
+par(mfrow=c(1,2))
+acf(d12d1serie15,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72)
+pacf(d12d1serie15,ylim=c(-1,1),col=c(rep(1,11),2),lwd=2,lag.max=72)
+```
+```{r}
+var(d1serie15)
+var(diff(d1serie15))
+var(diff(d1serie15,12)) # seasonal decreases variance.
+var(diff(serie15,12))
+```
+
+```{r}
+(modczechia=arima(serie15,order=c(1,1,1),seasonal=list(order=c(0,1,1),period=12)))
+abs(modczechia$coef/sqrt(diag(modczechia$var.coef)))
+```
+
+```{r}
+(modczechia2=arima(serie15,order=c(2,1,0),seasonal=list(order=c(0,1,1),period=12)))
+abs(modczechia2$coef/sqrt(diag(modczechia2$var.coef)))
+```
+
+```{r}
+(modczechia3=arima(serie15,order=c(0,1,2),seasonal=list(order=c(0,1,1),period=12)))
+abs(modczechia3$coef/sqrt(diag(modczechia3$var.coef)))
+```
+
+```{r}
+(modczechia4=arima(serie15,order=c(2,1,2),seasonal=list(order=c(0,1,1),period=12)))
+abs(modczechia4$coef/sqrt(diag(modczechia4$var.coef)))
+```
+
+
+
+```{r}
+AIC(modczechia,k = log(length(serie15)))
+AIC(modczechia2,k = log(length(serie15)))
+AIC(modczechia3,k = log(length(serie15)))
+AIC(modczechia4,k = log(length(serie15)))
+```
+
+AR(2) SMA(1)
+
+```{r}
+model = modczechia2
+dades = d12d1serie15
+validation(model,dades)
+```
+
+
+#POLAND
+
+```{r}
+poland <- read_csv("poland.csv",col_names = FALSE)
+serie16 = window(ts(poland,start=2004,frequency=12,end=2024))
+plot(serie16)
+```
+
+```{r}
+summary(ur.df(serie16, type = c("trend"), lags=20, selectlags = c("AIC")))
+summary(ur.pp(serie16, type = c("Z-tau"), model = c("trend"), lags = c("long")))
+```
+No
+
+```{r}
+d1serie16 = diff(serie16)
+summary(ur.df(d1serie16, type = c("trend"), lags=20, selectlags = c("AIC")))
+summary(ur.pp(d1serie16, type = c("Z-tau"), model = c("trend"), lags = c("long")))
+```
+
+## ARIMA Poland
+```{r}
+par(mfrow=c(1,2))
+acf(d1serie16,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72)
+pacf(d1serie16,ylim=c(-1,1),col=c(rep(1,11),2),lwd=2,lag.max=72)
+```
+
+```{r}
+(modpoland=arima(serie16,order=c(1,1,1),seasonal=list(order=c(1,0,0),period=12)))
+abs(modpoland$coef/sqrt(diag(modpoland$var.coef)))
+```
+
+```{r}
+(modpoland2=arima(serie16,order=c(2,1,0),seasonal=list(order=c(1,0,0),period=12)))
+abs(modpoland2$coef/sqrt(diag(modpoland2$var.coef)))
+```
+
+```{r}
+(modpoland3=arima(serie16,order=c(0,1,2),seasonal=list(order=c(0,0,2),period=12)))
+abs(modpoland3$coef/sqrt(diag(modpoland3$var.coef)))
+```
+
+
+```{r}
+model = modpoland
+dades = d1serie16
+validation(model,dades)
+```
+
+```{r}
+auto.arima(serie16)
+```
+
+
+```{r}
+AIC(modpoland,k = log(length(serie16)))
+AIC(modpoland2,k = log(length(serie16)))
+AIC(modpoland3,k = log(length(serie16)))
+
+```
+
+#HUNGARY
+
+```{r}
+hungary <- read_csv("hungary.csv",col_names = FALSE)
+serie17 = window(ts(hungary,start=2004,frequency=12,end=2024))
+plot(serie17)
+```
+
+```{r}
+summary(ur.df(serie17, type = c("trend"), lags=20, selectlags = c("AIC")))
+summary(ur.pp(serie17, type = c("Z-tau"), model = c("trend"), lags = c("long")))
+```
+NO.
+
+```{r}
+d1serie17 = diff(serie17)
+summary(ur.df(d1serie17, type = c("trend"), lags=20, selectlags = c("AIC")))
+summary(ur.pp(d1serie17, type = c("Z-tau"), model = c("trend"), lags = c("long")))
+```
+
+```{r}
+var(d1serie17)
+var(diff(d1serie17))
+```
+
+## ARIMA Hungary
+```{r}
+par(mfrow=c(1,2))
+acf(d1serie17,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72)
+pacf(d1serie17,ylim=c(-1,1),col=c(rep(1,11),2),lwd=2,lag.max=72)
+```
+ARMA(1,1)
+SMA(1)/SAR(1)
+
+
+```{r}
+(modhungary=arima(serie17,order=c(1,1,1),seasonal=list(order=c(1,0,0),period=12)))
+abs(modhungary$coef/sqrt(diag(modhungary$var.coef)))
+```
+
+```{r}
+(modhungary2=arima(serie17,order=c(2,1,0),seasonal=list(order=c(1,0,0),period=12)))
+abs(modhungary2$coef/sqrt(diag(modhungary2$var.coef)))
+```
+
+```{r}
+(modhungary3=arima(serie17,order=c(0,1,6),seasonal=list(order=c(0,0,1),period=12)))
+abs(modhungary3$coef/sqrt(diag(modhungary3$var.coef)))
+```
+```{r}
+(modhungary4=arima(serie17,order=c(0,1,1),seasonal=list(order=c(0,0,2),period=12)))
+abs(modhungary4$coef/sqrt(diag(modhungary4$var.coef)))
+```
+
+```{r}
+(modhungaryAA=arima(serie17,order=c(0,2,1),seasonal=list(order=c(0,0,2),period=12)))
+```
+
+```{r}
+AIC(modhungary,k = log(length(serie17)))
+AIC(modhungary2,k = log(length(serie17)))
+AIC(modhungary3,k = log(length(serie17)))
+AIC(modhungary4,k = log(length(serie17)))
+```
+
+```{r}
+model = modhungary
+dades = d1serie17
+validation(model,dades)
+```
+
+#ROMANIA
+
+```{r}
+romania <- read_csv("romania.csv",col_names = FALSE)
+serie18 = window(ts(romania,start=2004,frequency=12,end=2024))
+plot(serie18)
+```
+
+```{r}
+auto.arima(serie18)
+```
+```{r}
+summary(ur.df(serie18, type = c("trend"), lags=20, selectlags = c("AIC")))
+summary(ur.pp(serie18, type = c("Z-tau"), model = c("trend"), lags = c("long")))
+```
+NO.
+```{r}
+acf(serie18,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72)
+```
+```{r}
+d1serie18 = diff(serie18)
+summary(ur.df(d1serie18, type = c("trend"), lags=20, selectlags = c("AIC")))
+summary(ur.pp(d1serie18, type = c("Z-tau"), model = c("trend"), lags = c("long")))
+```
+```{r}
+var(d1serie18)
+var(diff(d1serie18)) 
+```
+
+## ARIMA Romania
+
+```{r}
+par(mfrow=c(1,2))
+acf(d1serie18,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72)
+pacf(d1serie18,ylim=c(-1,1),col=c(rep(1,11),2),lwd=2,lag.max=72)
+```
+
+
+```{r}
+(modromania=arima(serie18,order=c(1,1,1),seasonal=list(order=c(1,0,0),period=12)))
+abs(modromania$coef/sqrt(diag(modromania$var.coef)))
+```
+
+```{r}
+(modromania2=arima(serie18,order=c(0,1,8),seasonal=list(order=c(1,0,0),period=12)))
+abs(modromania2$coef/sqrt(diag(modromania2$var.coef)))
+```
+
+```{r}
+(modromania3=arima(serie18,order=c(1,1,0),seasonal=list(order=c(1,0,0),period=12)))
+abs(modromania3$coef/sqrt(diag(modromania3$var.coef)))
+```
+
+
+```{r}
+AIC(modromania,k = log(length(serie18)))
+AIC(modromania2,k = log(length(serie18)))
+AIC(modromania3,k = log(length(serie18)))
+```
+
+```{r}
+model = modromania2
+dades = d1serie18
+validation(model,dades)
+```
+
+#BULGARIA
+```{r}
+bulgaria <- read_csv("bulgaria.csv",col_names = FALSE)
+serie19 = window(ts(bulgaria,start=2004,frequency=12,end=2024))
+plot(serie19)
+```
+
+```{r}
+auto.arima(serie19)
+```
+
+```{r}
+summary(ur.df(serie19, type = c("trend"), lags=20, selectlags = c("AIC")))
+summary(ur.pp(serie19, type = c("Z-tau"), model = c("trend"), lags = c("long")))
+```
+NO.
+
+```{r}
+d1serie19 = diff(serie19)
+summary(ur.df(d1serie19, type = c("trend"), lags=20, selectlags = c("AIC")))
+summary(ur.pp(d1serie19, type = c("Z-tau"), model = c("trend"), lags = c("long")))
+
+```
+```{r}
+var(d1serie19)
+var(diff(d1serie19,12))
+var(diff(d1serie19))
+```
+
+## ARIMA Bulgaria
+```{r}
+par(mfrow=c(1,2))
+acf(d1serie19,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72)
+pacf(d1serie19,ylim=c(-1,1),col=c(rep(1,11),2),lwd=2,lag.max=72)
+
+```
+
+```{r}
+(modbulgaria=arima(serie19,order=c(1,1,1),seasonal=list(order=c(1,0,0),period=12)))
+abs(modbulgaria$coef/sqrt(diag(modbulgaria$var.coef)))
+```
+
+```{r}
+(modbulgaria2=arima(serie19,order=c(3,1,0),seasonal=list(order=c(1,0,0),period=12)))
+abs(modbulgaria2$coef/sqrt(diag(modbulgaria2$var.coef)))
+```
+
+```{r}
+(modbulgaria3=arima(serie19,order=c(0,1,10),seasonal=list(order=c(1,0,0),period=12)))
+abs(modbulgaria3$coef/sqrt(diag(modbulgaria3$var.coef)))
+```
+
+```{r}
+AIC(modbulgaria,k = log(length(serie19)))
+AIC(modbulgaria2,k = log(length(serie19)))
+AIC(modbulgaria3,k = log(length(serie19)))
+```
+
+```{r}
+model = modbulgaria2
+dades = d1serie10
+validation(model,dades)
+```
+
+```{r}
+model = modbulgaria3
+dades = d1serie10
+validation(model,dades)
+```
+
+#UNITED KINGDOM
+
+
+```{r}
+uk <- read_csv("uk.csv",col_names = FALSE)
+serie20 = window(ts(uk,start=2004,frequency=12,end=2024))
+plot(serie20)
+```
+
+
+```{r}
+summary(ur.df(serie20, type = c("trend"), lags=20, selectlags = c("AIC")))
+summary(ur.pp(serie20, type = c("Z-tau"), model = c("trend"), lags = c("long")))
+```
+NO.
+
+```{r}
+d1serie20 = diff(serie20)
+summary(ur.df(d1serie20, type = c("trend"), lags=20, selectlags = c("AIC")))
+summary(ur.pp(d1serie20, type = c("Z-tau"), model = c("trend"), lags = c("long")))
+```
+YES. 
+
+```{r}
+d12d1serie20 = diff(d1serie20,12)
+summary(ur.df(d12d1serie20, type = c("trend"), lags=20, selectlags = c("AIC")))
+summary(ur.pp(d12d1serie20, type = c("Z-tau"), model = c("trend"), lags = c("long")))
+```
+
+```{r}
+var(d1serie20)
+var(diff(d1serie20))
+var(d12d1serie20) 
+```
+
+## ARIMA United Kingdom
+```{r}
+par(mfrow=c(1,2))
+acf(d12d1serie20,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72)
+pacf(d12d1serie20,ylim=c(-1,1),col=c(rep(1,11),2),lwd=2,lag.max=72)
+```
+ARMA(1,1)
+AR(3)
+MA(5)
+SMA(1)
+
+```{r}
+(moduk=arima(serie20,order=c(1,1,1),seasonal=list(order=c(0,1,1),period=12)))
+abs(moduk$coef/sqrt(diag(moduk$var.coef)))
+```
+
+```{r}
+(moduk2=arima(serie20,order=c(3,1,0),seasonal=list(order=c(0,1,1),period=12)))
+abs(moduk2$coef/sqrt(diag(moduk2$var.coef)))
+```
+
+
+```{r}
+(moduk3=arima(serie20,order=c(0,1,6),seasonal=list(order=c(0,1,1),period=12)))
+abs(moduk3$coef/sqrt(diag(moduk3$var.coef)))
+```
+
+```{r}
+(moduk4=arima(serie20,order=c(0,1,1),seasonal=list(order=c(0,1,2),period=12)))
+abs(moduk4$coef/sqrt(diag(moduk4$var.coef)))
+```
+
+```{r}
+AIC(moduk,k = log(length(serie20)))
+AIC(moduk2,k = log(length(serie20)))
+AIC(moduk3,k = log(length(serie20)))
+```
+
+```{r}
+model = moduk
+dades = d12d1serie20
+validation(model,dades)
+```
+
+#............................
+
+#EUROPEAN MEAN
+
+```{r}
+europe <- read_csv("mean_europe.csv",col_names = FALSE)
+serie_eu = window(ts(europe,start=2004,frequency=12,end=2024))
+plot(serie_eu)
+```
+
+```{r}
+summary(ur.df(serie_eu, type = c("trend"), lags=20, selectlags = c("AIC")))
+```
+No reject.
+
+```{r}
+d1serie_eu = diff(serie_eu)
+```
+
+```{r}
+summary(ur.df(d1serie_eu, type = c("trend"), lags=20, selectlags = c("AIC")))
+```
+REJECT! Stationary already.
+
+```{r}
+par(mfrow=c(1,2))
+acf(d1serie_eu,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72)
+pacf(d1serie_eu,ylim=c(-1,1),col=c(rep(1,11),2),lwd=2,lag.max=72)
+```
+Seasonal?
+
+```{r}
+d12d1serie_eu = diff(d1serie_eu, 12)
+summary(ur.df(d12d1serie_eu, type = c("trend"), lags=20, selectlags = c("AIC")))
+```
+
+```{r}
+var(serie_eu)
+var(d1serie_eu)
+var(d12d1serie_eu)
+```
+
+```{r}
+par(mfrow=c(1,1))
+acf(d12d1serie_eu,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72)
+pacf(d12d1serie_eu,ylim=c(-1,1),col=c(rep(1,11),2),lwd=2,lag.max=72)
+```
+## ARIMA European Mean
+
+```{r}
+(modeu=arima(serie_eu,order=c(1,1,1),seasonal=list(order=c(0,1,1),period=12)))
+abs(modeu$coef/sqrt(diag(modeu$var.coef)))
+```
+
+```{r}
+(modeu2=arima(serie_eu,order=c(0,1,7),seasonal=list(order=c(0,1,1),period=12)))
+abs(modeu2$coef/sqrt(diag(modeu2$var.coef)))
+```
+```{r}
+(modeu3=arima(serie_eu,order=c(4,1,0),seasonal=list(order=c(0,1,1),period=12)))
+abs(modeu3$coef/sqrt(diag(modeu3$var.coef)))
+```
+
+```{r}
+(modeu4=arima(serie_eu,order=c(2,1,0),seasonal=list(order=c(0,1,1),period=12)))
+abs(modeu4$coef/sqrt(diag(modeu4$var.coef)))
+```
+
+```{r}
+AIC(modeu,k = log(length(serie_eu)))
+AIC(modeu2,k = log(length(serie_eu)))
+AIC(modeu3,k = log(length(serie_eu)))
+AIC(modeu4,k = log(length(serie_eu)))
+```
+AR(4) SMA(1) then
+NOW --> ARMA(1,1)
+
+```{r}
+model = modeu
+dades = d12d1serie_eu
+validation(model,dades)
+```
+
+##GARCH European Mean
+
+
+```{r}
+spec_eu=ugarchspec(variance.model = list(model = "sGARCH", garchOrder = c(1,1)), mean.model=list(armaOrder=c(1,1)), distribution.model = "norm")
+m_eu=ugarchfit(spec=spec_eu,data=d12d1serie_eu)
+m_eu
+```
+
+```{r}
+plot(m_eu)
+```
+
+
+#PIIGS MEAN
+
+```{r}
+pigs <- read_csv("pigs.csv",col_names = FALSE)
+serie_pigs = window(ts(pigs,start=2004,frequency=12,end=2024))
+plot(serie_pigs)
+```
+
+```{r}
+pigs.df <- ur.df(serie_pigs, type = c("trend"), lags=20, selectlags = c("AIC"))
+summary(pigs.df)
+```
+NO STATIONARY.
+
+```{r}
+acf(serie_pigs)
+```
+
+```{r}
+d1serie_pigs =diff(serie_pigs)
+summary(ur.df(d1serie_pigs, type = c("trend"), lags=20, selectlags = c("AIC")))
+```
+
+```{r}
+summary(ur.pp(d1serie_pigs, type = c("Z-tau"), model = c("trend"), lags = c("long")))
+```
+Is stationary by PP. 
+
+```{r}
+acf(d1serie_pigs)
+```
+Seasonal differencing might help. 
+
+```{r}
+var(d1serie_pigs)
+var(diff(d1serie_pigs))
+var(diff(d1serie_pigs,12)) # Yes. 
+```
+
+```{r}
+d12d1serie_pigs = diff(d1serie_pigs, 12)
+summary(ur.pp(d12d1serie_pigs, type = c("Z-tau"), model = c("trend"), lags = c("long")))
+```
+Yay
+```{r}
+summary(ur.df(d12d1serie_pigs, type = c("trend"), lags=20, selectlags = c("AIC")))
+```
+Reject. 
+
+```{r}
+par(mfrow=c(1,2))
+acf(d12d1serie_pigs,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72)
+pacf(d12d1serie_pigs,ylim=c(-1,1),col=c(rep(1,11),2),lwd=2,lag.max=72)
+```
+
+SMA(1)
+MA(7)
+ARMA(1,1)
+AR(1)
+
+## ARIMA PIIGS
+
+```{r}
+(modpigs=arima(serie_pigs,order=c(1,1,1),seasonal=list(order=c(0,1,1),period=12)))
+abs(modpigs$coef/sqrt(diag(modpigs$var.coef)))
+```
+
+```{r}
+(modpigs2=arima(serie_pigs,order=c(0,1,7),seasonal=list(order=c(0,1,1),period=12)))
+abs(modpigs2$coef/sqrt(diag(modpigs2$var.coef)))
+```
+
+```{r}
+(modpigs3=arima(serie_pigs,order=c(1,1,0),seasonal=list(order=c(0,1,1),period=12)))
+abs(modpigs3$coef/sqrt(diag(modpigs3$var.coef)))
+```
+
+```{r}
+AIC(modpigs,k = log(length(serie_pigs)))
+AIC(modpigs2,k = log(length(serie_pigs)))
+AIC(modpigs3,k = log(length(serie_pigs)))
+```
+
+ARMA(1,1), SMA(1)
+
+```{r}
+model=modpigs
+dades=d12d1serie_pigs
+validation(model,dades)
+```
+
+##GARCH PIIGS
+
+```{r}
+spec_pigs=ugarchspec(variance.model = list(model = "sGARCH", garchOrder = c(1,1)), mean.model=list(armaOrder=c(1,1)), distribution.model = "norm")
+m_pigs=ugarchfit(spec=spec_pigs,data=d12d1serie_pigs)
+m_pigs
+```
+
+```{r}
+plot(m_pigs)
+```
+
+#CENTRAL EUROPE MEAN
+
+```{r}
+central <- read_csv("central_mean.csv",col_names = FALSE)
+serie_central = window(ts(central,start=2004,frequency=12,end=2024))
+plot(serie_central)
+```
+
+```{r}
+summary(ur.df(serie_central, type = c("trend"), lags=20, selectlags = c("AIC")))
+```
+NO REJECT. No stationary
+
+```{r}
+d1serie_central = diff(serie_central)
+summary(ur.df(d1serie_central, type = c("trend"), lags=20, selectlags = c("AIC")))
+```
+
+```{r}
+summary(ur.pp(d1serie_central, type = c("Z-tau"), model = c("trend"), lags = c("long")))
+```
+PP rejects. 
+
+```{r}
+acf(d1serie_central, lag.max=70)
+```
+
+```{r}
+var(d1serie_central)
+var(diff(d1serie_central))
+var(diff(d1serie_central,12)) # seasonal differencing is needed
+```
+
+```{r}
+d12d1serie_central = diff(d1serie_central,12)
+summary(ur.pp(d12d1serie_central, type = c("Z-tau"), model = c("trend"), lags = c("long")))
+summary(ur.df(d12d1serie_central, type = c("trend"), lags=20, selectlags = c("AIC")))
+```
+
+## ARIMA Central Europe
+```{r}
+par(mfrow=c(1,2))
+acf(d12d1serie_central,col=c(rep(1,11),2),ylim=c(-1,1),lwd=2,lag.max=72)
+pacf(d12d1serie_central,col=c(rep(1,11),2),ylim=c(-1,1),lwd=2,lag.max=72)
+```
+
+```{r}
+(modcentral=arima(serie_central,order=c(1,1,1),seasonal=list(order=c(0,1,1),period=12)))
+abs(modcentral$coef/sqrt(diag(modcentral$var.coef)))
+```
+```{r}
+(modcentral2=arima(serie_central,order=c(2,1,0),seasonal=list(order=c(0,1,1),period=12)))
+abs(modcentral2$coef/sqrt(diag(modcentral2$var.coef)))
+```
+
+```{r}
+(modcentral3=arima(serie_central,order=c(0,1,4),seasonal=list(order=c(0,1,1),period=12)))
+abs(modcentral3$coef/sqrt(diag(modcentral3$var.coef)))
+```
+
+```{r}
+AIC(modcentral,k = log(length(serie_central)))
+AIC(modcentral2,k = log(length(serie_central)))
+AIC(modcentral3,k = log(length(serie_central)))
+```
+
+```{r}
+model = modcentral
+dades = d12d1serie_central
+validation(model,dades)
+```
+
+##GARCH Central Europe
+
+```{r}
+spec_central=ugarchspec(variance.model = list(model = "sGARCH", garchOrder = c(1,1)), mean.model=list(armaOrder=c(1,1)), distribution.model = "norm")
+m_central=ugarchfit(spec=spec_central,data=d12d1serie_central)
+m_central
+```
+
+```{r}
+plot(m_central)
+```
+
+# OLD (EU-15) NON-EMU MEAN
+
+```{r}
+eu15_noemu <- read_delim("eu15_noemu.csv", delim = ";", escape_double = FALSE, col_names = FALSE, trim_ws = TRUE)
+eu15_noemu <- eu15_noemu$X1
+serie_eu15no = window(ts(eu15_noemu,start=2004,frequency=12,end=2024))
+plot(serie_eu15no)
+```
+
+```{r}
+plot(decompose(serie_eu15no))
+```
+
+```{r}
+seasonplot(serie_eu15no, main = "Seasonal Subseries Plot", year.labels = TRUE, col = rainbow(12), pch = 19)
+```
+
+```{r}
+summary(ur.df(serie_eu15no, type = c("trend"), lags=20, selectlags = c("AIC")))
+```
+NO. 
+
+```{r}
+d1serie_eu15no = diff(serie_eu15no)
+summary(ur.df(d1serie_eu15no, type = c("trend"), lags=20, selectlags = c("AIC")))
+summary(ur.pp(d1serie_eu15no, type=c("Z-tau"), model = c("trend"), lags=c("long")))
+```
+YES. 
+
+```{r}
+acf(d1serie_eu15no)
+```
+
+```{r}
+var(d1serie_eu15no)
+var(diff(d1serie_eu15no))
+var(diff(d1serie_eu15no,12))
+```
+
+
+```{r}
+d12d1serie_eu15no <- diff(d1serie_eu15no,12)
+summary(ur.df(d12d1serie_eu15no, type = c("trend"), lags=20, selectlags = c("AIC")))
+summary(ur.pp(d12d1serie_eu15no, type=c("Z-tau"), model = c("trend"), lags=c("long")))
+```
+
+##ARIMA OLD NON-EMU 
+```{r}
+par(mfrow=c(1,2))
+acf(d12d1serie_eu15no,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72)
+pacf(d12d1serie_eu15no,ylim=c(-1,1),col=c(rep(1,11),2),lwd=2,lag.max=72)
+```
+
+
+```{r}
+(modeu15no=arima(serie_eu15no,order=c(1,1,1),seasonal=list(order=c(0,1,1),period=12)))
+abs(modeu15no$coef/sqrt(diag(modeu15no$var.coef)))
+```
+
+```{r}
+(modeu15no2=arima(serie_eu15no,order=c(3,1,0),seasonal=list(order=c(0,1,1),period=12)))
+abs(modeu15no2$coef/sqrt(diag(modeu15no2$var.coef)))
+```
+
+```{r}
+(modeu15no3=arima(serie_eu15no,order=c(0,1,5),seasonal=list(order=c(0,1,1),period=12)))
+abs(modeu15no3$coef/sqrt(diag(modeu15no3$var.coef)))
+```
+
+```{r}
+AIC(modeu15no,k = log(length(serie_eu15no)))
+AIC(modeu15no2,k = log(length(serie_eu15no)))
+AIC(modeu15no3,k = log(length(serie_eu15no)))
+```
+
+```{r}
+model = modeu15no
+dades = d12d1serie_eu15no
+validation(model,dades)
+```
+
+##GARCH OLD NON-EMU 
+```{r}
+spec_eu15no=ugarchspec(variance.model = list(model = "sGARCH", garchOrder = c(1,1)), mean.model=list(armaOrder=c(1,1)), distribution.model = "norm")
+m_eu15no=ugarchfit(spec=spec_eu15no,data=d12d1serie_eu15no)
+m_eu15no
+```
+
+```{r}
+plot(m_eu15no)
+```
+
+
+#NON-EUROZONE MEAN
+```{r}
+no_euro <- read_csv("non_eurozone_mean.csv",col_names = FALSE)
+serie_noeuro = window(ts(no_euro,start=2004,frequency=12,end=2024))
+plot(serie_noeuro)
+```
+
+```{r}
+monthplot(serie_noeuro)
+```
+
+
+```{r}
+summary(ur.df(serie_noeuro, type = c("trend"), lags=20, selectlags = c("AIC")))
+```
+NO.
+
+```{r}
+d1serie_noeuro = diff(serie_noeuro)
+summary(ur.df(d1serie_noeuro , type = c("trend"), lags=20, selectlags = c("AIC")))
+summary(ur.pp(d1serie_noeuro, type=c("Z-tau"), model = c("trend"), lags=c("long")))
+```
+
+```{r}
+par(mfrow=c(1,2))
+acf(d1serie_noeuro,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72)
+pacf(d1serie_noeuro,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72)
+```
+```{r}
+var(d1serie_noeuro)
+var(diff(d1serie_noeuro))
+var(diff(d1serie_noeuro,12))
+```
+
+
+```{r}
+d12d1serie_noeuro = diff(d1serie_noeuro, 12)
+summary(ur.pp(d12d1serie_noeuro, type=c("Z-tau"), model = c("trend"), lags=c("long")))
+```
+
+```{r}
+par(mfrow=c(1,2))
+acf(d12d1serie_noeuro,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72)
+pacf(d12d1serie_noeuro,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72)
+```
+
+### ARIMA NON-EUROZONE
+```{r}
+(modnoeuro=arima(serie_noeuro,order=c(1,1,1),seasonal=list(order=c(0,1,1),period=12)))
+abs(modnoeuro$coef/sqrt(diag(modnoeuro$var.coef)))
+```
+
+```{r}
+(modnoeuro2=arima(serie_noeuro,order=c(1,1,0),seasonal=list(order=c(0,1,1),period=12)))
+abs(modnoeuro2$coef/sqrt(diag(modnoeuro2$var.coef)))
+```
+
+```{r}
+(modnoeuro3=arima(serie_noeuro,order=c(0,1,8),seasonal=list(order=c(0,1,1),period=12)))
+abs(modnoeuro3$coef/sqrt(diag(modnoeuro3$var.coef)))
+```
+
+```{r}
+AIC(modnoeuro,k = log(length(serie_noeuro)))
+AIC(modnoeuro2,k = log(length(serie_noeuro)))
+AIC(modnoeuro3,k = log(length(serie_noeuro)))
+
+```
+
+```{r}
+model = modnoeuro
+dades = d12d1serie_noeuro
+validation(model,dades)
+```
+
+
+##GARCH NON-EUROZONE
+
+```{r}
+spec_noeuro=ugarchspec(variance.model = list(model = "sGARCH", garchOrder = c(1,1)), mean.model=list(armaOrder=c(1,0)), distribution.model = "norm")
+m_noeuro=ugarchfit(spec=spec_noeuro,data=d12d1serie_noeuro)
+m_noeuro
+```
+
+```{r}
+plot(m_noeuro)
+```
+
+#EUROZONE MEAN
+
+```{r}
+euro <- read_csv("eurozone.csv",col_names = FALSE)
+serie_euro = window(ts(euro,start=2004,frequency=12,end=2024))
+plot(serie_euro)
+```
+
+```{r}
+monthplot(serie_euro)
+```
+
+```{r}
+summary(ur.df(serie_euro, type = c("trend"), lags=20, selectlags = c("AIC")))
+summary(ur.pp(serie_euro, type=c("Z-tau"), model = c("trend"), lags=c("long")))
+```
+NO REJECT. 
+
+```{r}
+acf(serie_euro)
+```
+
+```{r}
+d1serie_euro = diff(serie_euro)
+summary(ur.df(d1serie_euro, type = c("trend"), lags=20, selectlags = c("AIC")))
+summary(ur.pp(d1serie_euro, type=c("Z-tau"), model = c("trend"), lags=c("long")))
+```
+STATIONARY ALREADY.
+
+```{r}
+acf(d1serie_euro,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72)
+```
+
+
+```{r}
+var(d1serie_euro)
+var(diff(d1serie_euro))
+var(diff(d1serie_euro,12))
+```
+
+```{r}
+d12d1serie_euro = diff(d1serie_euro, 12)
+summary(ur.pp(d12d1serie_euro, type=c("Z-tau"), model = c("trend"), lags=c("long")))
+```
+
+
+```{r}
+par(mfrow=c(1,2))
+acf(d12d1serie_euro,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72)
+pacf(d12d1serie_euro,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72)
+```
+#ARIMA EUROZONE
+
+```{r}
+(modeuro=arima(serie_euro,order=c(1,1,1),seasonal=list(order=c(0,1,1),period=12)))
+abs(modeuro$coef/sqrt(diag(modeuro$var.coef)))
+```
+
+```{r}
+(modeuro2=arima(serie_euro,order=c(0,1,4),seasonal=list(order=c(0,1,1),period=12)))
+abs(modeuro2$coef/sqrt(diag(modeuro2$var.coef)))
+```
+
+```{r}
+(modeuro3=arima(serie_euro,order=c(1,1,0),seasonal=list(order=c(0,1,1),period=12)))
+abs(modeuro3$coef/sqrt(diag(modeuro3$var.coef)))
+```
+
+```{r}
+AIC(modeuro,k = log(length(serie_euro)))
+AIC(modeuro2,k = log(length(serie_euro)))
+AIC(modeuro3,k = log(length(serie_euro)))
+```
+ARMA(1,1)
+
+```{r}
+model = modeuro
+dades = d12d1serie_euro
+validation(model,dades)
+```
+
+##GARCH EUROZONE
+
+```{r}
+spec_euro=ugarchspec(variance.model = list(model = "sGARCH", garchOrder = c(1,1)), mean.model=list(armaOrder=c(1,1)), distribution.model = "norm")
+m_euro=ugarchfit(spec=spec_euro,data=d12d1serie_euro)
+m_euro
+```
+
+```{r}
+plot(m_euro)
+```
+
+#NEW NON-EMU MEAN
+
+```{r}
+noemu_new <- read_csv("new_noemu.csv",col_names = FALSE)
+serie_noemunew = window(ts(noemu_new,start=2004,frequency=12,end=2024))
+plot(serie_noemunew)
+```
+
+```{r}
+summary(ur.df(serie_noemunew, type = c("trend"), lags=20, selectlags = c("AIC")))
+summary(ur.pp(serie_noemunew, type = c("Z-tau"), model = c("trend"), lags = c("long")))
+```
+NO
+
+```{r}
+d1serie_noemunew = diff(serie_noemunew)
+summary(ur.df(d1serie_noemunew , type = c("trend"), lags=20, selectlags = c("AIC")))
+summary(ur.pp(d1serie_noemunew , type = c("Z-tau"), model = c("trend"), lags = c("long")))
+```
+YES. 
+
+```{r}
+var(d1serie_noemunew) #solo una¿?
+var(diff(d1serie_noemunew))
+var(diff(d1serie_noemunew,12))
+d1d1serie_noemunew = diff(d1serie_noemunew,12)
+```
+
+```{r}
+d12d1serie_noemunew = diff(d1serie_noemunew,12)
+summary(ur.df(d12d1serie_noemunew, type = c("trend"), lags=20, selectlags = c("AIC")))
+summary(ur.pp(d12d1serie_noemunew, type = c("Z-tau"), model = c("trend"), lags = c("long")))
+```
+
+##ARIMA NEW NON-EMU
+```{r}
+par(mfrow=c(1,2))
+acf(d12d1serie_noemunew,ylim=c(-1,1),col=c(2,rep(1,11)),lwd=2,lag.max=72)
+pacf(d12d1serie_noemunew,ylim=c(-1,1),col=c(rep(1,11),2),lwd=2,lag.max=72)
+```
+```{r}
+(modnoeuronew=arima(serie_noemunew,order=c(1,1,1),seasonal=list(order=c(0,1,1),period=12)))
+abs(modnoeuronew$coef/sqrt(diag(modnoeuronew$var.coef)))
+```
+
+```{r}
+(modnoeuronew2=arima(serie_noemunew,order=c(2,1,1),seasonal=list(order=c(0,1,1),period=12)))
+abs(modnoeuronew2$coef/sqrt(diag(modnoeuronew2$var.coef)))
+```
+
+```{r}
+(modnoeuronew3=arima(serie_noemunew,order=c(0,1,8),seasonal=list(order=c(0,1,1),period=12)))
+abs(modnoeuronew3$coef/sqrt(diag(modnoeuronew3$var.coef)))
+```
+
+```{r}
+AIC(modnoeuronew,k = log(length(serie_noemunew)))
+AIC(modnoeuronew2,k = log(length(serie_noemunew)))
+AIC(modnoeuronew3,k = log(length(serie_noemunew)))
+```
+
+```{r}
+model = modnoeuronew
+dades = d12d1serie_noemunew
+validation(model,dades)
+```
+
+## GARCH NEW NON-EMU
+```{r}
+spec_noemunew=ugarchspec(variance.model = list(model = "sGARCH", garchOrder = c(1,1)), mean.model=list(armaOrder=c(1,1)), distribution.model = "norm")
+m_noeuronew=ugarchfit(spec=spec_noemunew,data=d12d1serie_noemunew)
+m_noeuronew
+```
+
+```{r}
+plot(m_noeuronew)
+```
+
+#.............................
+
+```{r}
+#PLOT CONDITIONAL SD. 
+plot(sigma(m_pigs), lwd=1, col=9, ylab="Conditional SD", xlab="Time")
+lines(sigma(m_central), col=4)
+lines(sigma(m_noeuronew), col=3)
+lines(sigma(m_eu15no), col=2)
+lines(sigma(m_euro), col=5)
+lines(sigma(m_noeuro), col=7)
+title("Conditional standard deviations")
+legend("topleft", 
+       legend = c( "PIIGS", "Central Europe", "New Non-EMU", "Old Non-EMU", 
+                  "Eurozone", "Non-Eurozone"),
+       col = c(9,4,3,2,5,7),
+       lty = 1, lwd = 3, 
+       cex = 0.8) 
+
+```
+
+
+#FIRST DCCS
+
+WITH EUROPEAN MEAN. 
+
+```{r}
+pigseurope = cbind(d12d1serie_pigs,d12d1serie_eu)
+colnames(pigseurope) <- c("pigs", "europe")
+
+centraleurope = cbind(d12d1serie_central, d12d1serie_eu)
+colnames(centraleurope) <- c("central", "europe")
+
+eu15noemueurope = cbind(d12d1serie_eu15no, d12d1serie_eu)
+colnames(eu15noemueurope) <- c("eu15 no emu", "europe")
+
+newnoemueurope = cbind(d12d1serie_noemunew, d12d1serie_eu)
+colnames(newnoemueurope) <- c("new no emu", "europe")
+```
+
+```{r}
+dcc.garch_pigs_eu = dccspec(uspec = multispec(c(spec_pigs, spec_eu)), dccOrder = c(1,1), distribution = "mvnorm")
+dcc.fit_pigs_eu = dccfit(dcc.garch_pigs_eu, data = pigseurope)
+dcc.fit_pigs_eu
+```
+
+```{r}
+plot(dcc.fit_pigs_eu)
+```
+
+```{r}
+dcc.garch_central_eu= dccspec(uspec = multispec(c(spec_central, spec_eu)), dccOrder = c(1,1), distribution = "mvnorm")
+dcc.fit_central_eu = dccfit(dcc.garch_central_eu, data = centraleurope)
+dcc.fit_central_eu
+```
+
+```{r}
+plot(dcc.fit_central_eu)
+```
+
+```{r}
+dcc.garch_eu15no_eu = dccspec(uspec = multispec(c(spec_eu15no, spec_eu)), dccOrder = c(1,1), distribution = "mvnorm")
+dcc.fit_eu15_eu = dccfit(dcc.garch_eu15no_eu, data = eu15noemueurope)
+dcc.fit_eu15_eu
+```
+
+```{r}
+plot(dcc.fit_eu15_eu)
+```
+
+
+```{r}
+dcc.garch_new_eu = dccspec(uspec = multispec(c(spec_noemunew, spec_eu)), dccOrder = c(1,1), distribution = "mvnorm")
+dcc.fit_new_eu = dccfit(dcc.garch_new_eu, data = newnoemueurope)
+dcc.fit_new_eu
+```
+
+```{r}
+plot(dcc.fit_new_eu)
+```
+
+#SECOND DCCS
+Between groups. 
+```{r}
+pigscentral = cbind(d12d1serie_pigs,d12d1serie_central)
+colnames(pigscentral) <- c("pigs", "central")
+
+pigseu15noemu = cbind(d12d1serie_pigs, d12d1serie_eu15no)
+colnames(pigseu15noemu) <- c("pigs", "eu15 no emu")
+
+pigsnewnoemu = cbind(d12d1serie_pigs, d12d1serie_noemunew)
+colnames(pigsnewnoemu) <- c("pigs", "new no emu")
+
+pigsnewnoemuB = cbind(d12d1serie_pigs, d1d1serie_noemunew)
+colnames(pigsnewnoemuB) <- c("pigs", "new no emu")
+
+centraleu15noemu = cbind(d12d1serie_central, d12d1serie_eu15no)
+colnames(centraleu15noemu) <- c("central", "eu15 no emu")
+
+centralnewnoemu = cbind(d12d1serie_central, d12d1serie_noemunew)
+colnames(centralnewnoemu) <- c("central", "new no emu")
+
+centralnewnoemuB = cbind(d12d1serie_central, d1d1serie_noemunew)
+colnames(centralnewnoemuB) <- c("central", "new no emu")
+
+eu15noemunewnoemu = cbind(d12d1serie_eu15no, d12d1serie_noemunew)
+colnames(eu15noemunewnoemu) <- c("eu15 no emu", "new no emu")
+
+eu15noemunewnoemuB = cbind(d12d1serie_eu15no, d1d1serie_noemunew)
+colnames(eu15noemunewnoemuB) <- c("eu15 no emu", "new no emu")
+
+```
+
+```{r}
+dcc.garch_pigs_central = dccspec(uspec = multispec(c(spec_pigs, spec_central)), dccOrder = c(1,1), distribution = "mvnorm")
+dcc.fit_pigs_central = dccfit(dcc.garch_pigs_central, data = pigscentral)
+dcc.fit_pigs_central
+```
+
+```{r}
+plot(dcc.fit_pigs_central)
+```
+
+```{r}
+dcc.garch_pigs_eu15 = dccspec(uspec = multispec(c(spec_pigs, spec_eu15no)), dccOrder = c(1,1), distribution = "mvnorm")
+dcc.fit_pigs_eu15 = dccfit(dcc.garch_pigs_eu15, data = pigseu15noemu)
+dcc.fit_pigs_eu15
+plot(dcc.fit_pigs_eu15)
+```
+
+
+```{r}
+plot(serie_euro, type = "l", xaxt = "n", 
+     main = "Time Series with All Months and Years", 
+     xlab = "Time", ylab = "Values", ylim=c(80,140))
+
+time_points <- time(serie_euro)
+dates <- as.Date(as.yearmon(time_points)) 
+axis(1, at = time_points, labels = format(dates, "%Y-%b"), las = 2, cex.axis = 0.7)
+lines(serie_noeuro, col=4)
+
+```
+
+
+```{r}
+spec_noemunew=ugarchspec(variance.model = list(model = "sGARCH", garchOrder = c(1,1)), mean.model=list(armaOrder=c(3,3)), distribution.model = "norm")
+m_noeuronew=ugarchfit(spec=spec_noemunew,data=d12d1serie_noemunew)
+m_noeuronew
+```
+
+```{r}
+dcc.garch_pigs_new = dccspec(uspec = multispec(c(spec_pigs, spec_noemunew)), dccOrder = c(1,1), distribution = "mvnorm")
+dcc.fit_pigs_new = dccfit(dcc.garch_pigs_new, data = pigsnewnoemu)
+dcc.fit_pigs_new
+```
+
+```{r}
+plot(dcc.fit_pigs_new)
+```
+
+```{r}
+dcc.garch_central_eu15 = dccspec(uspec = multispec(c(spec_central, spec_eu15no)), dccOrder = c(1,1), distribution = "mvnorm")
+dcc.fit_central_eu15 = dccfit(dcc.garch_central_eu15, data = centraleu15noemu)
+dcc.fit_central_eu15
+```
+
+
+```{r}
+plot(dcc.fit_central_eu15)
+```
+
+
+```{r}
+dcc.garch_central_new = dccspec(uspec = multispec(c(spec_central, spec_noemunew)), dccOrder = c(1,1), distribution = "mvnorm")
+dcc.fit_central_new = dccfit(dcc.garch_central_new, data = centralnewnoemu)
+dcc.fit_central_new
+```
+
+```{r}
+plot(dcc.fit_central_new)
+```
+
+```{r}
+dcc.garch_eu15no_new = dccspec(uspec = multispec(c(spec_eu15no, spec_noemunew)), dccOrder = c(1,1), distribution = "mvnorm")
+dcc.fit_eu15no_new = dccfit(dcc.garch_eu15no_new, data = eu15noemunewnoemu)
+dcc.fit_eu15no_new
+```
+
+```{r}
+plot(dcc.fit_eu15no_new)
+```
+
+#THIRD DCC
+
+```{r}
+euronoeuro <- cbind(d12d1serie_euro, d12d1serie_noeuro)
+colnames(euronoeuro) <- c("eurozone", "noeurozone")
+```
+
+```{r}
+dcc.garch_euro_noeuro = dccspec(uspec = multispec(c(spec_euro, spec_noeuro)), dccOrder = c(1,1), distribution = "mvnorm")
+dcc.fit_euro_noeuro = dccfit(dcc.garch_euro_noeuro, data = euronoeuro)
+dcc.fit_euro_noeuro
+```
+
+```{r}
+plot(dcc.fit_euro_noeuro)
+```
+
+#..............
+
+# FORECASTING
+
+#SPAIN
+```{r}
+spain_8 <- forecast(mod1, h = 7)
+spain_8
+```
+
+
+STATISTICS
+```{r}
+spain_whole <- window(ts(spain, start=2004, frequency=12, end=c(2024,8)))
+oos <- tail(spain_whole, 7) #subset of real values
+accuracy(oos, spain_8[4]$mean)
+cbind(spain_8[4]$mean, oos)
+```
+Stability of the model
+
+```{r}
+ultim=c(2023,1)
+pdq=c(1,1,1)
+PDQ=c(0,1,1)
+
+serie1A=window(ts(spain,start= 2004, end=2023, frequency=12))
+serie1B=window(ts(spain,start= 2004, end=2024, frequency=12))
+
+(mod1A=arima(serie1A,order=pdq,seasonal=list(order=PDQ,period=12)))
+(mod1B=arima(serie1B,order=pdq,seasonal=list(order=PDQ,period=12)))
+```
+MODEL is STABLE. Magnitude, sign and significance are more or less the same, so the correlation structure of the model does not change. To check for stability, the model chosen for Spain ARIMA(1,1,1)(0,1,1)_12 is fitted into data until 2023, and then until the data available (2024), to see if the parameters of the model change much. 
+
+```{r}
+pred <- predict(mod1, n.ahead=7)
+pr<-ts(c(tail(serie1B,1),pred$pred),start=2024,freq=12) # take january 2024 ACTUAL, and then add FEB-AUG predicted. 
+se<-ts(c(0,pred$se),start=2024,freq=12) # January is 0, because it is known, therefore it is a number, and sd of a number is 0. 
+#Intervals
+tl<-ts(pr-1.96*se,start=2024,freq=12)
+tu<-ts(pr+1.96*se,start=2024,freq=12)
+
+ts.plot(spain_whole,tl,tu,pr,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2025),type="o",main="SPAIN out-of-sample", lwd = c(1.5, 2, 2, 2), ylim = c(min(tl) - 10, max(tu) + 0.5))
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+```
+
+##LONG TERM SPAIN
+
+```{r}
+#update model
+(mod1=arima(spain_whole,order=c(1,1,1),seasonal=list(order=c(0,1,1),period=12)))
+```
+
+```{r}
+pred1=predict(mod1,n.ahead=10)
+pr<-ts(c(tail(spain_whole,1),pred1$pred),start=c(2024,8),freq=12)
+se<-ts(c(0,pred1$se),start=c(2024,8),freq=12)
+
+#Intervals
+tl1<-ts(pr-1.96*se,start=c(2024,8),freq=12)
+tu1<-ts(pr+1.96*se,start=c(2024,8),freq=12)
+
+ts.plot(spain_whole,tl1,tu1,pr,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2026),type="o",main="Spain long-term forecast",ylim = c(110, 160))
+abline(v=(ultim[1]-2):(ultim[1]+2),lty=3,col=4)
+```
+
+
+#Italy
+Stability
+```{r}
+ultim=c(2023,1)
+pdq=c(1,1,1)
+PDQ=c(1,1,0)
+
+serie2A=window(ts(italy,start= 2004, end=2023, frequency=12))
+serie2B=window(ts(italy,start= 2004, end=2024, frequency=12))
+
+(mod2A=arima(serie2A,order=pdq,seasonal=list(order=PDQ,period=12)))
+(mod2B=arima(serie2B,order=pdq,seasonal=list(order=PDQ,period=12)))
+```
+```{r}
+italy_whole <- window(ts(italy, start=2004, frequency=12, end=c(2024,8)))
+```
+
+```{r}
+pred_italy <- predict(moditaly2, n.ahead=7)
+pr_italy<-ts(c(tail(serie2B,1),pred_italy$pred),start=2024,freq=12) 
+
+se_italy<-ts(c(0,pred_italy$se),start=2024,freq=12) . 
+
+#Intervals
+tl_italy<-ts(pr_italy-1.96*se_italy,start=2024,freq=12)
+tu_italy<-ts(pr_italy+1.96*se_italy,start=2024,freq=12)
+
+ts.plot(italy_whole,tl_italy,tu_italy,pr_italy,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2025),type="o",main="ITALY out-of-sample", lwd = c(1.5, 2, 2, 2), ylim = c(min(tl_italy) - 10, max(tu_italy) + 0.5))
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+```
+
+```{r}
+oos_italy <- tail(italy_whole, 7) #subset of real values
+accuracy(oos_italy, predict(moditaly1, n.ahead=7)$pred)
+
+cbind(predict(moditaly1, n.ahead=7)$pred, oos_italy) 
+```
+
+```{r}
+(moditaly2=arima(italy_whole,order=c(1,1,1),seasonal=list(order=c(1,1,0),period=12)))
+```
+
+##LONG-TERM ITALY
+```{r}
+pred2=predict(moditaly2,n.ahead=10)
+pr2<-ts(c(tail(italy_whole,1),pred2$pred),start=c(2024,8),freq=12)
+se2<-ts(c(0,pred2$se),start=c(2024,8),freq=12)
+
+#Intervals
+tl2<-ts(pr2-1.96*se2,start=c(2024,8),freq=12)
+tu2<-ts(pr2+1.96*se2,start=c(2024,8),freq=12)
+
+ts.plot(italy_whole,tl2,tu2,pr2,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2026),type="o",main="Italy long-term forecast",ylim = c(110, 160))
+abline(v=(ultim[1]-2):(ultim[1]+2),lty=3,col=4)
+```
+
+#GREECE
+modgr3 + serie4
+```{r}
+greece_whole <- window(ts(greece, start=2004, frequency=12, end=c(2024,8)))
+oos_greece <- tail(greece_whole, 7)
+accuracy(oos_greece,predict(modgr3, n.ahead=7)$pred)
+cbind(predict(modgr3, n.ahead=7)$pred, oos_greece) 
+```
+
+stability of the model
+
+```{r}
+ultim=c(2023,1)
+pdq_3=c(3,1,0)
+PDQ_3=c(0,1,1)
+
+serie3A=window(ts(greece,start= 2004, end=2023, frequency=12))
+serie3B=window(ts(greece,start= 2004, end=2024, frequency=12))
+
+(mod3A=arima(serie3A,order=pdq_3,seasonal=list(order=PDQ_3,period=12)))
+(mod3B=arima(serie3B,order=pdq_3,seasonal=list(order=PDQ_3,period=12)))
+```
+
+```{r}
+pred_greece <- predict(modgr3, n.ahead=7)
+pr_greece<-ts(c(tail(serie3B,1),pred_greece$pred),start=2024,freq=12) 
+
+se_greece<-ts(c(0,pred_greece$se),start=2024,freq=12)  
+
+#Intervals
+tl_greece<-ts(pr_greece-1.96*se_greece,start=2024,freq=12)
+tu_greece<-ts(pr_greece+1.96*se_greece,start=2024,freq=12)
+
+ts.plot(greece_whole,tl_greece,tu_greece,pr_greece,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2025),type="o",main="GREECE out-of-sample", lwd = c(1.5, 2, 2, 2), ylim = c(min(tl_greece) - 10, max(tu_greece) + 0.5))
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+```
+
+##LONG-TERM GREECE
+```{r}
+(modgr3=arima(greece_whole,order=c(3,1,0),seasonal=list(order=c(0,1,1),period=12)))
+```
+
+```{r}
+pred3=predict(modgr3,n.ahead=10)
+pr3<-ts(c(tail(greece_whole,1),pred3$pred),start=c(2024,8),freq=12)
+se3<-ts(c(0,pred3$se),start=c(2024,8),freq=12)
+
+#Intervals
+tl3<-ts(pr3-1.96*se3,start=c(2024,8),freq=12)
+tu3<-ts(pr3+1.96*se3,start=c(2024,8),freq=12)
+
+ts.plot(greece_whole,tl3,tu3,pr3,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2026),type="o",main="Greece long-term forecast",ylim = c(110, 160))
+abline(v=(ultim[1]-2):(ultim[1]+2),lty=3,col=4)
+```
+
+#PORTUGAL
+```{r}
+portugal_whole <- window(ts(portugal, start=2004, frequency=12, end=c(2024,8)))
+oos_port <- tail(portugal_whole, 7) #subset of real values
+
+accuracy(oos_port,predict(modp1, n.ahead=7)$pred)
+cbind(predict(modp5, n.ahead=7)$pred, oos_port)
+```
+
+
+```{r}
+ultim=c(2023,1)
+pdq_4=c(0,1,2)
+PDQ_4=c(0,1,1)
+
+serie4A=window(ts(portugal,start= 2004, end=2023, frequency=12))
+serie4B=window(ts(portugal,start= 2004, end=2024, frequency=12))
+
+(mod4A=arima(serie4A,order=pdq_4,seasonal=list(order=PDQ_4,period=12)))
+(mod4B=arima(serie4B,order=pdq_4,seasonal=list(order=PDQ_4,period=12)))
+```
+Stable. Looks good. 
+
+```{r}
+pred_portugal <- predict(modp3, n.ahead=7)
+pr_portugal<-ts(c(tail(serie4B,1),pred_portugal$pred),start=2024,freq=12) 
+
+se_portugal<-ts(c(0,pred_portugal$se),start=2024,freq=12)  
+
+#Intervals
+tl_portugal<-ts(pr_portugal-1.96*se_portugal,start=2024,freq=12)
+tu_portugal<-ts(pr_portugal+1.96*se_portugal,start=2024,freq=12)
+
+ts.plot(portugal_whole,tl_portugal,tu_portugal,pr_portugal,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2025),type="o",main="Portugal out-of-sample", lwd = c(1.5, 2, 2, 2), ylim = c(min(tl_portugal) - 10, max(tu_portugal) + 0.5))
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+```
+Overestimation (with modp1). Try another model? --> modp4
+
+```{r}
+accuracy(oos_port,predict(modp4, n.ahead=7)$pred)
+cbind(predict(modp4, n.ahead=7)$pred, oos_port)
+```
+
+##LONG-TERM PORTUGAL
+```{r}
+(modp3=arima(portugal_whole,order=c(0,1,2),seasonal=list(order=c(0,1,1),period=12)))
+```
+
+```{r}
+pred4=predict(modp1,n.ahead=10)
+pr4<-ts(c(tail(portugal_whole,1),pred4$pred),start=c(2024,8),freq=12)
+se4<-ts(c(0,pred4$se),start=c(2024,8),freq=12)
+
+#Intervals
+tl4<-ts(pr4-1.96*se4,start=c(2024,8),freq=12)
+tu4<-ts(pr4+1.96*se4,start=c(2024,8),freq=12)
+
+ts.plot(portugal_whole,tl4,tu4,pr4,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2026),type="o",main="Portugal long-term forecast",ylim = c(110, 160))
+abline(v=(ultim[1]-2):(ultim[1]+2),lty=3,col=4)
+
+```
+
+#GERMANY
+
+```{r}
+germany_whole <- window(ts(germany, start=2004, frequency=12, end=c(2024,8)))
+oos_ger <- tail(germany_whole, 7) #subset of real values
+accuracy(oos_ger,predict(modger2, n.ahead=7)$pred)
+cbind(predict(modger2, n.ahead=7)$pred, oos_ger)
+```
+
+```{r}
+ultim=c(2023,1)
+pdq_5=c(0,1,6)
+PDQ_5=c(0,1,1)
+
+serie5A=window(ts(germany,start= 2004, end=2023, frequency=12))
+serie5B=window(ts(germany,start= 2004, end=2024, frequency=12))
+
+(mod5A=arima(serie5A,order=pdq_5,seasonal=list(order=PDQ_5,period=12)))
+(mod5B=arima(serie5B,order=pdq_5,seasonal=list(order=PDQ_5,period=12)))
+```
+```{r}
+pred_ger <- predict(modger2, n.ahead=7)
+pr_ger<-ts(c(tail(serie5B,1),pred_ger$pred),start=2024,freq=12) 
+se_ger<-ts(c(0,pred_ger$se),start=2024,freq=12)  
+
+#Intervals
+tl_ger<-ts(pr_ger-1.96*se_ger,start=2024,freq=12)
+tu_ger<-ts(pr_ger+1.96*se_ger,start=2024,freq=12)
+
+ts.plot(germany_whole,tl_ger,tu_ger,pr_ger,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2025),type="o",main="GERMANY out-of-sample", lwd = c(1.5, 2, 2, 2), ylim = c(min(tl_ger) - 10, max(tu_ger) + 0.5))
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+```
+
+##LONG-TERM GERMANY
+```{r}
+(modger2=arima(germany_whole,order=c(4,1,0),seasonal=list(order=c(0,1,1),period=12)))
+
+```
+
+```{r}
+pred5=predict(modger2,n.ahead=10)
+pr5<-ts(c(tail(germany_whole,1),pred5$pred),start=c(2024,8),freq=12)
+se5<-ts(c(0,pred5$se),start=c(2024,8),freq=12)
+
+#Intervals
+tl5<-ts(pr5-1.96*se5,start=c(2024,8),freq=12)
+tu5<-ts(pr5+1.96*se5,start=c(2024,8),freq=12)
+
+ts.plot(germany_whole,tl5,tu5,pr5,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2026),type="o",main="Germany long-term forecast",ylim = c(110, 160))
+abline(v=(ultim[1]-2):(ultim[1]+2),lty=3,col=4)
+
+```
+
+#FRANCE 
+
+```{r}
+france_whole <- window(ts(france, start=2004, frequency=12, end=c(2024,8)))
+oos_france <- tail(france_whole, 7) #subset of real values
+accuracy(oos_france,predict(modfr, n.ahead=7)$pred)
+cbind(predict(modfr, n.ahead=7)$pred, oos_france)
+```
+
+```{r}
+ultim=c(2023,1)
+pdq_6=c(1,1,1)
+PDQ_6=c(0,1,1)
+
+serie6A=window(ts(france,start= 2004, end=2023, frequency=12))
+serie6B=window(ts(france,start= 2004, end=2024, frequency=12))
+
+(mod6A=arima(serie6A,order=pdq_6,seasonal=list(order=PDQ_6,period=12)))
+(mod6B=arima(serie6B,order=pdq_6,seasonal=list(order=PDQ_6,period=12)))
+```
+```{r}
+pred_france <- predict(modfr, n.ahead=7)
+pr_france<-ts(c(tail(serie6B,1),pred_france$pred),start=2024,freq=12) 
+se_france<-ts(c(0,pred_france$se),start=2024,freq=12)  
+
+#Intervals
+tl_france<-ts(pr_france-1.96*se_france,start=2024,freq=12)
+tu_france<-ts(pr_france+1.96*se_france,start=2024,freq=12)
+
+ts.plot(france_whole,tl_france,tu_france,pr_france,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2025),type="o",main="FRANCE out-of-sample", lwd = c(1.5, 2, 2, 2), ylim = c(min(tl_france) - 10, max(tu_france) + 0.5))
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+```
+
+##LONG-TERM FRANCE
+```{r}
+(modfr2=arima(france_whole,order=c(4,1,0),seasonal=list(order=c(0,1,1),period=12)))
+
+```
+
+```{r}
+pred6=predict(modfr2,n.ahead=10)
+pr6<-ts(c(tail(france_whole,1),pred6$pred),start=c(2024,8),freq=12)
+se6<-ts(c(0,pred6$se),start=c(2024,8),freq=12)
+
+#Intervals
+tl6<-ts(pr6-1.96*se6,start=c(2024,8),freq=12)
+tu6<-ts(pr6+1.96*se6,start=c(2024,8),freq=12)
+
+ts.plot(france_whole,tl6,tu6,pr6,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2026),type="o",main="France long-term forecast",ylim = c(110, 160))
+abline(v=(ultim[1]-2):(ultim[1]+2),lty=3,col=4)
+```
+
+#BELGIUM
+
+```{r}
+belgium_whole <- window(ts(belgium, start=2004, frequency=12, end=c(2024,8)))
+oos_belg <- tail(belgium_whole, 7) #subset of real values
+accuracy(oos_belg,predict(modbelgium3, n.ahead=7)$pred)
+cbind(predict(modbelgium3, n.ahead=7)$pred, oos_belg)
+```
+
+```{r}
+ultim=c(2023,1)
+pdq_7=c(3,1,0)
+PDQ_7=c(0,1,1)
+
+serie7A=window(ts(belgium,start= 2004, end=2023, frequency=12))
+serie7B=window(ts(belgium,start= 2004, end=2024, frequency=12))
+
+(mod7A=arima(serie7A,order=pdq_7,seasonal=list(order=PDQ_7,period=12)))
+(mod7B=arima(serie7B,order=pdq_7,seasonal=list(order=PDQ_7,period=12)))
+
+```
+
+```{r}
+pred_belgium <- predict(modbelgium3, n.ahead=7)
+pr_belgium<-ts(c(tail(serie7B,1),pred_belgium$pred),start=2024,freq=12) 
+
+se_belgium<-ts(c(0,pred_belgium$se),start=2024,freq=12) 
+tl_belgium<-ts(pr_belgium-1.96*se_belgium,start=2024,freq=12)
+tu_belgium<-ts(pr_belgium+1.96*se_belgium,start=2024,freq=12)
+
+ts.plot(belgium_whole,tl_belgium,tu_belgium,pr_belgium,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2025),type="o",main="BELGIUM out-of-sample", lwd = c(1.5, 2, 2, 2), ylim = c(min(tl_belgium) - 10, max(tu_belgium) + 0.5))
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+```
+
+##LONG-TERM BELGIUM
+```{r}
+(modbelgium3=arima(belgium_whole,order=c(3,1,0),seasonal=list(order=c(0,1,1),period=12)))
+```
+
+```{r}
+pred7=predict(modbelgium3,n.ahead=10)
+pr7<-ts(c(tail(belgium_whole,1),pred7$pred),start=c(2024,8),freq=12)
+se7<-ts(c(0,pred7$se),start=c(2024,8),freq=12)
+
+#Intervals
+tl7<-ts(pr7-1.96*se7,start=c(2024,8),freq=12)
+tu7<-ts(pr7+1.96*se7,start=c(2024,8),freq=12)
+
+ts.plot(belgium_whole,tl7,tu7,pr7,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2026),type="o",main="Belgium long-term forecast",ylim = c(110, 160))
+abline(v=(ultim[1]-2):(ultim[1]+2),lty=3,col=4)
+```
+
+#THE NETHERLANDS
+
+```{r}
+net_whole <- window(ts(netherlands, start=2004, frequency=12, end=c(2024,8)))
+oos_net <- tail(net_whole, 7) #subset of real values
+accuracy(oos_net,predict(modnet3, n.ahead=7)$pred)
+cbind(predict(modnet3, n.ahead=7)$pred, oos_net)
+```
+
+```{r}
+ultim=c(2023,1)
+pdq_8=c(0,1,0)
+PDQ_8=c(2,1,0)
+
+serie8A=window(ts(netherlands,start= 2004, end=2023, frequency=12))
+serie8B=window(ts(netherlands,start= 2004, end=2024, frequency=12))
+
+(mod8A=arima(serie8A,order=pdq_8,seasonal=list(order=PDQ_8,period=12)))
+(mod8B=arima(serie8B,order=pdq_8,seasonal=list(order=PDQ_8,period=12)))
+```
+```{r}
+pred_net <- predict(modnet3, n.ahead=7)
+pr_net<-ts(c(tail(serie8B,1),pred_net$pred),start=2024,freq=12) 
+
+se_net<-ts(c(0,pred_net$se),start=2024,freq=12) 
+tl_net<-ts(pr_net-1.96*se_net,start=2024,freq=12)
+tu_net<-ts(pr_net+1.96*se_net,start=2024,freq=12)
+
+ts.plot(net_whole,tl_net,tu_net,pr_net,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2025),type="o",main="NETHERLANDS out-of-sample", lwd = c(1.5, 2, 2, 2), ylim = c(min(tl_net) - 10, max(tu_net) + 0.5))
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+
+```
+
+##LONG-TERM THE NETHERLANDS
+```{r}
+(modnet3=arima(net_whole,order=c(0,1,0),seasonal=list(order=c(2,1,0),period=12)))
+```
+
+```{r}
+pred8=predict(modnet3,n.ahead=10)
+pr8<-ts(c(tail(net_whole,1),pred8$pred),start=c(2024,8),freq=12)
+se8<-ts(c(0,pred8$se),start=c(2024,8),freq=12)
+
+#Intervals
+tl8<-ts(pr8-1.96*se8,start=c(2024,8),freq=12)
+tu8<-ts(pr8+1.96*se8,start=c(2024,8),freq=12)
+
+ts.plot(net_whole,tl8,tu8,pr8,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2026),type="o",main="The Netherlands long-term forecast",ylim = c(110, 160))
+abline(v=(ultim[1]-2):(ultim[1]+2),lty=3,col=4)
+```
+
+#AUSTRIA
+```{r}
+austria_whole <- window(ts(austria, start=2004, frequency=12, end=c(2024,8)))
+oos_aus <- tail(austria_whole, 7) #subset of real values
+accuracy(oos_aus,predict(modaustria4, n.ahead=7)$pred)
+cbind(predict(modaustria4, n.ahead=7)$pred, oos_aus)
+```
+
+```{r}
+ultim=c(2023,1)
+pdq_9=c(4,1,0)
+PDQ_9=c(0,1,1)
+
+serie9A=window(ts(austria,start= 2004, end=2023, frequency=12))
+serie9B=window(ts(austria,start= 2004, end=2024, frequency=12))
+
+(mod9A=arima(serie9A,order=pdq_9,seasonal=list(order=PDQ_9,period=12)))
+(mod9B=arima(serie9B,order=pdq_9,seasonal=list(order=PDQ_9,period=12)))
+```
+
+```{r}
+pred_aus <- predict(modaustria4, n.ahead=7)
+pr_aus<-ts(c(tail(serie9B,1),pred_aus$pred),start=2024,freq=12) 
+
+se_aus<-ts(c(0,pred_aus$se),start=2024,freq=12) 
+tl_aus<-ts(pr_aus-1.96*se_aus,start=2024,freq=12)
+tu_aus<-ts(pr_aus+1.96*se_aus,start=2024,freq=12)
+
+ts.plot(austria_whole,tl_aus,tu_aus,pr_aus,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2025),type="o",main="AUSTRIA out-of-sample", lwd = c(1.5, 2, 2, 2), ylim = c(min(tl_aus) - 10, max(tu_aus) + 0.5))
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+```
+
+##LONG-TERM AUSTRIA
+```{r}
+(modaustria4=arima(austria_whole,order=c(4,1,0),seasonal=list(order=c(0,1,1),period=12)))
+```
+
+```{r}
+pred9=predict(modaustria4,n.ahead=10)
+pr9<-ts(c(tail(austria_whole,1),pred9$pred),start=c(2024,8),freq=12)
+se9<-ts(c(0,pred9$se),start=c(2024,8),freq=12)
+
+#Intervals
+tl9<-ts(pr9-1.96*se9,start=c(2024,8),freq=12)
+tu9<-ts(pr9+1.96*se9,start=c(2024,8),freq=12)
+
+ts.plot(austria_whole,tl9,tu9,pr9,lty=c(1,2,2,1),lwd = c(1.5, 2, 2, 2),col=c(1,4,4,2),xlim=c(2023,2026),type="o",main="Austria long-term forecast",ylim = c(110, 160))
+abline(v=(ultim[1]-2):(ultim[1]+2),lty=3,col=4)
+```
+
+#FINLAND
+```{r}
+fin_whole <- window(ts(finland, start=2004, frequency=12, end=c(2024,8)))
+oos_fin <- tail(fin_whole, 7) #subset of real values
+accuracy(oos_fin,predict(modfinland2, n.ahead=7)$pred)
+cbind(predict(modfinland2, n.ahead=7)$pred, oos_fin)
+```
+
+```{r}
+ultim=c(2023,1)
+pdq_10=c(1,1,2)
+PDQ_10=c(1,0,1)
+
+serie10A=window(ts(finland,start= 2004, end=2023, frequency=12))
+serie10B=window(ts(finland,start= 2004, end=2024, frequency=12))
+
+(mod10A=arima(serie10A,order=pdq_10,seasonal=list(order=PDQ_10,period=12)))
+(mod10B=arima(serie10B,order=pdq_10,seasonal=list(order=PDQ_10,period=12)))
+```
+```{r}
+pred_fin <- predict(modfinland2, n.ahead=7)
+pr_fin<-ts(c(tail(serie10B,1),pred_fin$pred),start=2024,freq=12) 
+
+se_fin<-ts(c(0,pred_fin$se),start=2024,freq=12) 
+tl_fin<-ts(pr_fin-1.96*se_fin,start=2024,freq=12)
+tu_fin<-ts(pr_fin+1.96*se_fin,start=2024,freq=12)
+
+ts.plot(fin_whole,tl_fin,tu_fin,pr_fin,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2025),type="o",main="FINLAND out-of-sample", lwd = c(1.5, 2, 2, 2), ylim = c(min(tl_fin) - 10, max(tu_fin) + 0.5))
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+```
+##LONG-TERM FINLAND
+```{r}
+(modfinland2=arima(fin_whole,order=c(1,1,2),seasonal=list(order=c(1,0,1),period=12)))
+```
+
+```{r}
+pred10=predict(modfinland2,n.ahead=10)
+pr10<-ts(c(tail(fin_whole,1),pred10$pred),start=c(2024,8),freq=12)
+se10<-ts(c(0,pred10$se),start=c(2024,8),freq=12)
+
+#Intervals
+tl10<-ts(pr10-1.96*se10,start=c(2024,8),freq=12)
+tu10<-ts(pr10+1.96*se10,start=c(2024,8),freq=12)
+
+ts.plot(fin_whole,tl10,tu10,pr10,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2026),type="o",main="Finland long-term forecast",ylim = c(110, 160))
+abline(v=(ultim[1]-2):(ultim[1]+2),lty=3,col=4)
+```
+
+#IRELAND
+
+```{r}
+ir_whole <- window(ts(ireland, start=2004, frequency=12, end=c(2024,8)))
+oos_ir <- tail(ir_whole, 7) #subset of real values
+accuracy(oos_ir,predict(modireland, n.ahead=7)$pred)
+cbind(predict(modireland, n.ahead=7)$pred, oos_ir)
+```
+
+```{r}
+ultim=c(2023,1)
+pdq_11=c(1,1,1)
+PDQ_11=c(0,1,1)
+
+serie11A=window(ts(ireland,start= 2004, end=2023, frequency=12))
+serie11B=window(ts(ireland,start= 2004, end=2024, frequency=12))
+
+(mod11A=arima(serie11A,order=pdq_11,seasonal=list(order=PDQ_11,period=12)))
+(mod11B=arima(serie11B,order=pdq_11,seasonal=list(order=PDQ_11,period=12)))
+```
+```{r}
+pred_ir <- predict(modireland, n.ahead=7)
+pr_ir<-ts(c(tail(serie11B,1),pred_ir$pred),start=2024,freq=12) 
+
+se_ir<-ts(c(0,pred_ir$se),start=2024,freq=12) 
+tl_ir<-ts(pr_ir-1.96*se_ir,start=2024,freq=12)
+tu_ir<-ts(pr_ir+1.96*se_ir,start=2024,freq=12)
+
+ts.plot(ir_whole,tl_ir,tu_ir,pr_ir,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2025),type="o",main="IRELAND out-of-sample", lwd = c(1.5, 2, 2, 2), ylim = c(min(tl_ir) - 10, max(tu_ir) + 0.5))
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+```
+
+##LONG-TERM IRELAND
+```{r}
+(modireland=arima(ir_whole,order=c(1,1,1),seasonal=list(order=c(0,1,1),period=12)))
+```
+
+```{r}
+pred11=predict(modireland,n.ahead=10)
+pr11<-ts(c(tail(ir_whole,1),pred11$pred),start=c(2024,8),freq=12)
+se11<-ts(c(0,pred11$se),start=c(2024,8),freq=12)
+
+#Intervals
+tl11<-ts(pr11-1.96*se11,start=c(2024,8),freq=12)
+tu11<-ts(pr11+1.96*se11,start=c(2024,8),freq=12)
+
+ts.plot(ir_whole,tl11,tu11,pr11,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2026),type="o",main="Ireland long-term forecast",ylim = c(110, 160))
+abline(v=(ultim[1]-2):(ultim[1]+2),lty=3,col=4)
+```
+
+#DENMARK
+
+```{r}
+den_whole <- window(ts(denmark, start=2004, frequency=12, end=c(2024,7)))
+oos_den <- tail(den_whole, 6) #subset of real values
+accuracy(oos_den,predict(moddenmark2, n.ahead=6)$pred)
+cbind(predict(moddenmark2, n.ahead=6)$pred, oos_den)
+```
+
+```{r}
+ultim=c(2023,1)
+pdq_12=c(0,1,5)
+PDQ_12=c(0,1,1)
+
+serie12A=window(ts(denmark,start= 2004, end=2023, frequency=12))
+serie12B=window(ts(denmark,start= 2004, end=2024, frequency=12))
+
+(mod12A=arima(serie12A,order=pdq_12,seasonal=list(order=PDQ_12,period=12)))
+(mod12B=arima(serie12B,order=pdq_12,seasonal=list(order=PDQ_12,period=12)))
+```
+```{r}
+pred_den <- predict(moddenmark2, n.ahead=6)
+pr_den<-ts(c(tail(serie12B,1),pred_den$pred),start=2024,freq=12) 
+
+se_den<-ts(c(0,pred_den$se),start=2024,freq=12) 
+tl_den<-ts(pr_den-1.96*se_den,start=2024,freq=12)
+tu_den<-ts(pr_den+1.96*se_den,start=2024,freq=12)
+
+ts.plot(den_whole,tl_den,tu_den,pr_den,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2025),type="o",main="DENMARK out-of-sample", lwd = c(1.5, 2, 2, 2), ylim = c(min(tl_den) - 10, max(tu_den) + 0.5))
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+```
+
+##LONG-TERM DENMARK
+```{r}
+(moddenmark2=arima(den_whole,order=c(0,1,5),seasonal=list(order=c(0,1,1),period=12)))
+```
+
+
+```{r}
+pred12=predict(moddenmark2,n.ahead=10)
+pr12<-ts(c(tail(den_whole,1),pred12$pred),start=c(2024,7),freq=12)
+se12<-ts(c(0,pred12$se),start=c(2024,7),freq=12)
+
+#Intervals
+tl12<-ts(pr12-1.96*se12,start=c(2024,7),freq=12)
+tu12<-ts(pr12+1.96*se12,start=c(2024,7),freq=12)
+
+ts.plot(den_whole,tl12,tu12,pr12,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2026),type="o",main="Denmark long-term forecast",ylim = c(110, 160))
+abline(v=(ultim[1]-2):(ultim[1]+2),lty=3,col=4)
+```
+
+#SWEDEN
+
+```{r}
+sweden_whole <- window(ts(sweden, start=2004, frequency=12, end=c(2024,7)))
+oos_sw <- tail(sweden_whole, 6) #subset of real values
+accuracy(oos_sw,predict(modsweden2, n.ahead=6)$pred)
+cbind(predict(modsweden2, n.ahead=6)$pred, oos_sw)
+```
+
+```{r}
+ultim=c(2023,1)
+pdq_13=c(4,1,0)
+PDQ_13=c(0,1,1)
+
+serie13A=window(ts(sweden,start= 2004, end=2023, frequency=12))
+serie13B=window(ts(sweden,start= 2004, end=2024, frequency=12))
+
+(mod13A=arima(serie13A,order=pdq_13,seasonal=list(order=PDQ_13,period=12)))
+(mod13B=arima(serie13B,order=pdq_13,seasonal=list(order=PDQ_13,period=12)))
+```
+
+```{r}
+pred_sw <- predict(modsweden, n.ahead=6)
+pr_sw<-ts(c(tail(serie13B,1),pred_sw$pred),start=2024,freq=12) 
+
+se_sw<-ts(c(0,pred_sw$se),start=2024,freq=12) 
+tl_sw<-ts(pr_sw-1.96*se_sw,start=2024,freq=12)
+tu_sw<-ts(pr_sw+1.96*se_sw,start=2024,freq=12)
+
+ts.plot(sweden_whole,tl_sw,tu_sw,pr_sw,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2025),type="o",main="SWEDEN out-of-sample", lwd = c(1.5, 2, 2, 2), ylim = c(min(tl_sw) - 10, max(tu_sw) + 0.5))
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+```
+
+##LONG-TERM SWEDEN
+```{r}
+(modsweden=arima(sweden_whole,order=c(1,1,1),seasonal=list(order=c(0,1,1),period=12)))
+
+```
+
+```{r}
+pred13=predict(modsweden,n.ahead=10)
+pr13<-ts(c(tail(sweden_whole,1),pred13$pred),start=c(2024,7),freq=12)
+se13<-ts(c(0,pred13$se),start=c(2024,7),freq=12)
+
+#Intervals
+tl13<-ts(pr13-1.96*se13,start=c(2024,7),freq=12)
+tu13<-ts(pr13+1.96*se13,start=c(2024,7),freq=12)
+
+ts.plot(sweden_whole,tl13,tu13,pr13,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2026),type="o",main="Sweden long-term forecast",ylim = c(110, 160))
+abline(v=(ultim[1]-2):(ultim[1]+2),lty=3,col=4)
+```
+
+#UNITED KINGDOM
+
+```{r}
+uk_whole <- window(ts(uk, start=2004, frequency=12, end=c(2024,8)))
+oos_uk <- tail(uk_whole, 7) #subset of real values
+accuracy(oos_uk,predict(moduk, n.ahead=7)$pred)
+cbind(predict(moduk, n.ahead=7)$pred, oos_uk)
+```
+
+```{r}
+ultim=c(2023,1)
+pdq_14=c(1,1,1)
+PDQ_14=c(0,1,1)
+
+serie14A=window(ts(uk,start= 2004, end=2023, frequency=12))
+serie14B=window(ts(uk,start= 2004, end=2024, frequency=12))
+
+(mod14A=arima(serie14A,order=pdq_14,seasonal=list(order=PDQ_14,period=12)))
+(mod14B=arima(serie14B,order=pdq_14,seasonal=list(order=PDQ_14,period=12)))
+```
+
+```{r}
+pred_uk <- predict(moduk, n.ahead=7)
+pr_uk<-ts(c(tail(serie14B,1),pred_uk$pred),start=2024,freq=12) 
+
+se_uk<-ts(c(0,pred_uk$se),start=2024,freq=12) 
+tl_uk<-ts(pr_uk-1.96*se_uk,start=2024,freq=12)
+tu_uk<-ts(pr_uk+1.96*se_uk,start=2024,freq=12)
+
+ts.plot(uk_whole,tl_uk,tu_uk,pr_uk,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2025),type="o",main="UK out-of-sample", lwd = c(1.5, 2, 2, 2), ylim = c(min(tl_uk) - 10, max(tu_uk) + 0.5))
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+```
+
+##LONG-TERM UNITED KINGDOM
+```{r}
+(moduk=arima(uk_whole,order=c(1,1,1),seasonal=list(order=c(0,1,1),period=12)))
+
+```
+
+
+```{r}
+pred14=predict(moduk,n.ahead=10)
+pr14<-ts(c(tail(uk_whole,1),pred14$pred),start=c(2024,8),freq=12)
+se14<-ts(c(0,pred14$se),start=c(2024,8),freq=12)
+
+#Intervals
+tl14<-ts(pr14-1.96*se14,start=c(2024,8),freq=12)
+tu14<-ts(pr14+1.96*se14,start=c(2024,8),freq=12)
+
+ts.plot(uk_whole,tl14,tu14,pr14,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2026),type="o",main="UK long-term forecast",ylim = c(110, 160))
+abline(v=(ultim[1]-2):(ultim[1]+2),lty=3,col=4)
+```
+
+#CZECH REPUBLIC
+
+```{r}
+cz_whole <- window(ts(czechia, start=2004, frequency=12, end=c(2024,7)))
+oos_cz <- tail(cz_whole, 6) #subset of real values
+accuracy(oos_cz,predict(modczechia2, n.ahead=6)$pred)
+cbind(predict(modczechia2, n.ahead=6)$pred, oos_cz)
+```
+
+```{r}
+ultim=c(2023,1)
+pdq_15=c(2,1,0)
+PDQ_15=c(0,1,1)
+
+serie15A=window(ts(czechia,start= 2004, end=2023, frequency=12))
+serie15B=window(ts(czechia,start= 2004, end=2024, frequency=12))
+
+(mod15A=arima(serie15A,order=pdq_15,seasonal=list(order=PDQ_15,period=12)))
+(mod15B=arima(serie15B,order=pdq_15,seasonal=list(order=PDQ_15,period=12)))
+```
+```{r}
+pred_cz <- predict(modczechia2, n.ahead=6)
+pr_cz<-ts(c(tail(serie15B,1),pred_cz$pred),start=2024,freq=12) 
+
+se_cz<-ts(c(0,pred_cz$se),start=2024,freq=12) 
+tl_cz<-ts(pr_cz-1.96*se_cz,start=2024,freq=12)
+tu_cz<-ts(pr_cz+1.96*se_cz,start=2024,freq=12)
+
+ts.plot(cz_whole,tl_cz,tu_cz,pr_cz,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2025),type="o",main="CZECHIA out-of-sample", lwd = c(1.5, 2, 2, 2), ylim = c(min(tl_cz) - 10, max(tu_cz) + 0.5))
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+
+```
+
+##LONG-TERM CZECH REPUBLIC
+```{r}
+(modczechia2=arima(cz_whole,order=c(2,1,0),seasonal=list(order=c(0,1,1),period=12)))
+```
+
+```{r}
+pred15=predict(modczechia2,n.ahead=10)
+pr15<-ts(c(tail(cz_whole,1),pred15$pred),start=c(2024,7),freq=12)
+se15<-ts(c(0,pred15$se),start=c(2024,7),freq=12)
+
+#Intervals
+tl15<-ts(pr15-1.96*se15,start=c(2024,7),freq=12)
+tu15<-ts(pr15+1.96*se15,start=c(2024,7),freq=12)
+
+ts.plot(cz_whole,tl15,tu15,pr15,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2026),type="o",main="Czech Republic long-term forecast",ylim = c(110, 165))
+abline(v=(ultim[1]-2):(ultim[1]+2),lty=3,col=4)
+```
+
+#POLAND
+```{r}
+poland_whole <- window(ts(poland, start=2004, frequency=12, end=c(2024,7)))
+oos_pol <- tail(poland_whole, 6) #subset of real values
+accuracy(oos_pol,predict(modpoland, n.ahead=6)$pred)
+cbind(predict(modpoland, n.ahead=6)$pred, oos_pol)
+```
+
+```{r}
+ultim=c(2023,1)
+pdq_16=c(1,1,1)
+PDQ_16=c(1,0,0)
+
+serie16A=window(ts(poland,start= 2004, end=2023, frequency=12))
+serie16B=window(ts(poland,start= 2004, end=2024, frequency=12))
+
+(mod16A=arima(serie16A,order=pdq_16,seasonal=list(order=PDQ_16,period=12), method="ML"))
+(mod16B=arima(serie16B,order=pdq_16,seasonal=list(order=PDQ_16,period=12)))
+```
+
+```{r}
+pred_pol <- predict(modpoland, n.ahead=6)
+pr_pol<-ts(c(tail(serie16B,1),pred_pol$pred),start=2024,freq=12) 
+
+se_pol<-ts(c(0,pred_pol$se),start=2024,freq=12) 
+tl_pol<-ts(pr_pol-1.96*se_pol,start=2024,freq=12)
+tu_pol<-ts(pr_pol+1.96*se_pol,start=2024,freq=12)
+
+ts.plot(poland_whole,tl_pol,tu_pol,pr_pol,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2025),type="o",main="POLAND out-of-sample", lwd = c(1.5, 2, 2, 2), ylim = c(min(tl_pol) - 10, max(tu_pol) + 0.5))
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+```
+
+##LONG-TERM POLAND
+```{r}
+(modpoland=arima(poland_whole,order=c(1,1,1),seasonal=list(order=c(1,0,0),period=12)))
+
+```
+
+```{r}
+pred16=predict(modpoland,n.ahead=10)
+pr16<-ts(c(tail(poland_whole,1),pred16$pred),start=c(2024,7),freq=12)
+se16<-ts(c(0,pred16$se),start=c(2024,7),freq=12)
+
+#Intervals
+tl16<-ts(pr16-1.96*se16,start=c(2024,7),freq=12)
+tu16<-ts(pr16+1.96*se16,start=c(2024,7),freq=12)
+
+ts.plot(poland_whole,tl16,tu16,pr16,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2026),type="o",main="Poland long-term forecast",ylim = c(110, 165))
+abline(v=(ultim[1]-2):(ultim[1]+2),lty=3,col=4)
+```
+
+#HUNGARY
+
+```{r}
+hungary_whole <- window(ts(hungary, start=2004, frequency=12, end=c(2024,7)))
+oos_hung <- tail(hungary_whole, 6) #subset of real values
+accuracy(oos_hung,predict(modhungary4, n.ahead=6)$pred)
+cbind(predict(modhungary4, n.ahead=6)$pred, oos_hung)
+```
+
+```{r}
+ultim=c(2023,1)
+pdq_17=c(0,1,1)
+PDQ_17=c(0,0,2)
+
+serie17A=window(ts(hungary,start= 2004, end=2023, frequency=12))
+serie17B=window(ts(hungary,start= 2004, end=2024, frequency=12))
+
+(mod17A=arima(serie17A,order=pdq_17,seasonal=list(order=PDQ_17,period=12)))
+(mod17B=arima(serie17B,order=pdq_17,seasonal=list(order=PDQ_17,period=12)))
+```
+
+```{r}
+pred_hung <- predict(modhungary4, n.ahead=6)
+pr_hung<-ts(c(tail(serie17B,1),pred_hung$pred),start=2024,freq=12) 
+
+se_hung<-ts(c(0,pred_hung$se),start=2024,freq=12) 
+tl_hung<-ts(pr_hung-1.96*se_hung,start=2024,freq=12)
+tu_hung<-ts(pr_hung+1.96*se_hung,start=2024,freq=12)
+
+ts.plot(hungary_whole,tl_hung,tu_hung,pr_hung,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2025),type="o",main="HUNGARY out-of-sample", lwd = c(1.5, 2, 2, 2), ylim = c(min(tl_hung) - 10, max(tu_hung) + 0.5))
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+```
+
+##LONG-TERM HUNGARY
+```{r}
+(modhungary4=arima(hungary_whole,order=c(0,1,1),seasonal=list(order=c(0,0,2),period=12)))
+```
+
+```{r}
+pred17=predict(modhungary4,n.ahead=10)
+pr17<-ts(c(tail(hungary_whole,1),pred17$pred),start=c(2024,7),freq=12)
+se17<-ts(c(0,pred17$se),start=c(2024,7),freq=12)
+
+#Intervals
+tl17<-ts(pr17-1.96*se17,start=c(2024,7),freq=12)
+tu17<-ts(pr17+1.96*se17,start=c(2024,7),freq=12)
+
+ts.plot(hungary_whole,tl17,tu17,pr17,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2026),type="o",main="Hungary long-term forecast",ylim = c(110, 180))
+abline(v=(ultim[1]-2):(ultim[1]+2),lty=3,col=4)
+```
+
+#ROMANIA
+
+```{r}
+romania_whole <- window(ts(romania, start=2004, frequency=12, end=c(2024,7)))
+oos_rom <- tail(romania_whole, 6) #subset of real values
+accuracy(oos_rom,predict(modromania2, n.ahead=7)$pred)
+cbind(predict(modromania2, n.ahead=6)$pred, oos_rom)
+```
+
+```{r}
+ultim=c(2023,1)
+pdq_18=c(0,1,8)
+PDQ_18=c(1,0,0)
+
+serie18A=window(ts(romania,start= 2004, end=2023, frequency=12))
+serie18B=window(ts(romania,start= 2004, end=2024, frequency=12))
+
+(mod18A=arima(serie18A,order=pdq_18,seasonal=list(order=PDQ_18,period=12)))
+(mod18B=arima(serie18B,order=pdq_18,seasonal=list(order=PDQ_18,period=12)))
+```
+```{r}
+pred_rom <- predict(modromania2, n.ahead=6)
+pr_rom<-ts(c(tail(serie18B,1),pred_rom$pred),start=2024,freq=12) 
+
+se_rom<-ts(c(0,pred_rom$se),start=2024,freq=12) 
+tl_rom<-ts(pr_rom-1.96*se_rom,start=2024,freq=12)
+tu_rom<-ts(pr_rom+1.96*se_rom,start=2024,freq=12)
+
+ts.plot(romania_whole,tl_rom,tu_rom,pr_rom,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2025),type="o",main="ROMANIA out-of-sample", lwd = c(1.5, 2, 2, 2), ylim = c(min(tl_rom) - 10, max(tu_rom) + 0.5))
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+```
+
+##LONG-TERM ROMANIA
+```{r}
+(modromania2=arima(romania_whole,order=c(0,1,8),seasonal=list(order=c(1,0,0),period=12)))
+```
+
+```{r}
+pred18=predict(modromania2,n.ahead=10)
+pr18<-ts(c(tail(romania_whole,1),pred18$pred),start=c(2024,7),freq=12)
+se18<-ts(c(0,pred18$se),start=c(2024,7),freq=12)
+
+#Intervals
+tl18<-ts(pr18-1.96*se18,start=c(2024,7),freq=12)
+tu18<-ts(pr18+1.96*se18,start=c(2024,7),freq=12)
+
+ts.plot(romania_whole,tl18,tu18,pr18,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2026),type="o",main="Romania long-term forecast",ylim = c(110, 160))
+abline(v=(ultim[1]-2):(ultim[1]+2),lty=3,col=4)
+```
+
+#BULGARIA
+
+```{r}
+bulgaria_whole <- window(ts(bulgaria, start=2004, frequency=12, end=c(2024,7)))
+oos_bulg <- tail(bulgaria_whole, 6) 
+accuracy(oos_bulg,predict(modbulgaria2, n.ahead=6)$pred)
+cbind(predict(modbulgaria2, n.ahead=6)$pred, oos_bulg)
+```
+
+```{r}
+ultim=c(2023,1)
+pdq_19=c(3,1,0)
+PDQ_19=c(1,0,0)
+
+serie19A=window(ts(bulgaria,start= 2004, end=2023, frequency=12))
+serie19B=window(ts(bulgaria,start= 2004, end=2024, frequency=12))
+
+(mod19A=arima(serie19A,order=pdq_19,seasonal=list(order=PDQ_19,period=12)))
+(mod19B=arima(serie19B,order=pdq_19,seasonal=list(order=PDQ_19,period=12)))
+```
+```{r}
+pred_bulg <- predict(modbulgaria2, n.ahead=6)
+pr_bulg<-ts(c(tail(serie19B,1),pred_bulg$pred),start=2024,freq=12) 
+
+se_bulg<-ts(c(0,pred_bulg$se),start=2024,freq=12) 
+tl_bulg<-ts(pr_bulg-1.96*se_bulg,start=2024,freq=12)
+tu_bulg<-ts(pr_bulg+1.96*se_bulg,start=2024,freq=12)
+
+ts.plot(bulgaria_whole,tl_bulg,tu_bulg,pr_bulg,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2025),type="o",main="BULGARIA out-of-sample", lwd = c(1.5, 2, 2, 2), ylim = c(min(tl_bulg) - 10, max(tu_bulg) + 0.5))
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+```
+
+##LONG-TERM BULGARIA
+```{r}
+(modbulgaria2=arima(bulgaria_whole,order=c(3,1,0),seasonal=list(order=c(1,0,0),period=12)))
+```
+
+```{r}
+pred19=predict(modbulgaria2,n.ahead=10)
+pr19<-ts(c(tail(bulgaria_whole,1),pred19$pred),start=c(2024,7),freq=12)
+se19<-ts(c(0,pred19$se),start=c(2024,7),freq=12)
+
+#Intervals
+tl19<-ts(pr19-1.96*se19,start=c(2024,7),freq=12)
+tu19<-ts(pr19+1.96*se19,start=c(2024,7),freq=12)
+
+ts.plot(bulgaria_whole,tl19,tu19,pr19,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2026),type="o",main="Bulgaria long-term forecast",ylim = c(110, 150))
+abline(v=(ultim[1]-2):(ultim[1]+2),lty=3,col=4)
+```
+
+#PLOT TOGETHER. 
+
+out of sample
+```{r}
+par(mfrow = c(2, 5))
+ts.plot(spain_whole,tl,tu,pr,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2025),type="o",main="SPAIN out-of-sample", lwd = c(1.5, 2, 2, 2), ylim = c(min(tl) - 10, max(tu) + 0.5))
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+ts.plot(italy_whole,tl_italy,tu_italy,pr_italy,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2025),type="o",main="ITALY out-of-sample", lwd = c(1.5, 2, 2, 2), ylim = c(min(tl_italy) - 10, max(tu_italy) + 0.5))
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+ts.plot(greece_whole,tl_greece,tu_greece,pr_greece,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2025),type="o",main="GREECE out-of-sample", lwd = c(1.5, 2, 2, 2), ylim = c(min(tl_greece) - 10, max(tu_greece) + 0.5))
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+ts.plot(portugal_whole,tl_portugal,tu_portugal,pr_portugal,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2025),type="o",main="Portugal out-of-sample", lwd = c(1.5, 2, 2, 2), ylim = c(min(tl_portugal) - 10, max(tu_portugal) + 0.5))
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+
+ts.plot(germany_whole,tl_ger,tu_ger,pr_ger,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2025),type="o",main="GERMANY out-of-sample", lwd = c(1.5, 2, 2, 2), ylim = c(min(tl_ger) - 10, max(tu_ger) + 0.5))
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+ts.plot(france_whole,tl_france,tu_france,pr_france,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2025),type="o",main="FRANCE out-of-sample", lwd = c(1.5, 2, 2, 2), ylim = c(min(tl_france) - 10, max(tu_france) + 0.5))
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+
+ts.plot(belgium_whole,tl_belgium,tu_belgium,pr_belgium,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2025),type="o",main="BELGIUM out-of-sample", lwd = c(1.5, 2, 2, 2), ylim = c(min(tl_belgium) - 10, max(tu_belgium) + 0.5))
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+ts.plot(net_whole,tl_net,tu_net,pr_net,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2025),type="o",main="NETHERLANDS out-of-sample", lwd = c(1.5, 2, 2, 2), ylim = c(min(tl_net) - 10, max(tu_net) + 0.5))
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+ts.plot(austria_whole,tl_aus,tu_aus,pr_aus,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2025),type="o",main="AUSTRIA out-of-sample", lwd = c(1.5, 2, 2, 2), ylim = c(min(tl_aus) - 10, max(tu_aus) + 0.5))
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+ts.plot(fin_whole,tl_fin,tu_fin,pr_fin,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2025),type="o",main="FINLAND out-of-sample", lwd = c(1.5, 2, 2, 2), ylim = c(min(tl_fin) - 10, max(tu_fin) + 0.5))
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+
+ts.plot(ir_whole,tl_ir,tu_ir,pr_ir,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2025),type="o",main="IRELAND out-of-sample", lwd = c(1.5, 2, 2, 2), ylim = c(min(tl_ir) - 10, max(tu_ir) + 0.5))
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+ts.plot(den_whole,tl_den,tu_den,pr_den,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2025),type="o",main="DENMARK out-of-sample", lwd = c(1.5, 2, 2, 2), ylim = c(min(tl_den) - 10, max(tu_den) + 0.5))
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+ts.plot(sweden_whole,tl_sw,tu_sw,pr_sw,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2025),type="o",main="SWEDEN out-of-sample", lwd = c(1.5, 2, 2, 2), ylim = c(min(tl_sw) - 10, max(tu_sw) + 0.5))
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+ts.plot(uk_whole,tl_uk,tu_uk,pr_uk,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2025),type="o",main="UK out-of-sample", lwd = c(1.5, 2, 2, 2), ylim = c(min(tl_uk) - 10, max(tu_uk) + 0.5))
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+
+ts.plot(cz_whole,tl_cz,tu_cz,pr_cz,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2025),type="o",main="CZECHIA out-of-sample", lwd = c(1.5, 2, 2, 2), ylim = c(min(tl_cz) - 10, max(tu_cz) + 0.5))
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+ts.plot(poland_whole,tl_pol,tu_pol,pr_pol,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2025),type="o",main="POLAND out-of-sample", lwd = c(1.5, 2, 2, 2), ylim = c(min(tl_pol) - 10, max(tu_pol) + 0.5))
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+ts.plot(hungary_whole,tl_hung,tu_hung,pr_hung,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2025),type="o",main="HUNGARY out-of-sample", lwd = c(1.5, 2, 2, 2), ylim = c(min(tl_hung) - 10, max(tu_hung) + 0.5))
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+ts.plot(romania_whole,tl_rom,tu_rom,pr_rom,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2025),type="o",main="ROMANIA out-of-sample", lwd = c(1.5, 2, 2, 2), ylim = c(min(tl_rom) - 10, max(tu_rom) + 0.5))
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+ts.plot(bulgaria_whole,tl_bulg,tu_bulg,pr_bulg,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2025),type="o",main="BULGARIA out-of-sample", lwd = c(1.5, 2, 2, 2), ylim = c(min(tl_bulg) - 10, max(tu_bulg) + 0.5))
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+
+
+```
+
+forecast
+```{r}
+par(mfrow = c(2, 5))
+
+ts.plot(spain_whole,tl1,tu1,pr,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2026),type="o",main="Spain long-term forecast",ylim = c(110, 180))
+abline(v=(ultim[1]-2):(ultim[1]+2),lty=3,col=4)
+
+ts.plot(italy_whole,tl2,tu2,pr2,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2026),type="o",main="Italy long-term forecast",ylim = c(110, 180))
+abline(v=(ultim[1]-2):(ultim[1]+2),lty=3,col=4)
+
+ts.plot(greece_whole,tl3,tu3,pr3,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2026),type="o",main="Greece long-term forecast",ylim = c(110, 180))
+abline(v=(ultim[1]-2):(ultim[1]+2),lty=3,col=4)
+
+ts.plot(portugal_whole,tl4,tu4,pr4,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2026),type="o",main="Portugal long-term forecast",ylim = c(110, 180))
+abline(v=(ultim[1]-2):(ultim[1]+2),lty=3,col=4)
+
+ts.plot(cz_whole,tl15,tu15,pr15,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2026),type="o",main="Czech Republic long-term forecast",ylim = c(110, 180))
+abline(v=(ultim[1]-2):(ultim[1]+2),lty=3,col=4)
+
+ts.plot(germany_whole,tl5,tu5,pr5,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2026),type="o",main="Germany long-term forecast",ylim = c(110, 180))
+abline(v=(ultim[1]-2):(ultim[1]+2),lty=3,col=4)
+
+ts.plot(france_whole,tl6,tu6,pr6,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2026),type="o",main="France long-term forecast",ylim = c(110, 180))
+abline(v=(ultim[1]-2):(ultim[1]+2),lty=3,col=4)
+
+ts.plot(belgium_whole,tl7,tu7,pr7,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2026),type="o",main="Belgium long-term forecast",ylim = c(110, 180))
+abline(v=(ultim[1]-2):(ultim[1]+2),lty=3,col=4)
+
+ts.plot(net_whole,tl8,tu8,pr8,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2026),type="o",main="The Netherlands long-term forecast",ylim = c(110, 180))
+abline(v=(ultim[1]-2):(ultim[1]+2),lty=3,col=4)
+ts.plot(austria_whole,tl9,tu9,pr9,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2026),type="o",main="Austria long-term forecast",ylim = c(110, 180))
+abline(v=(ultim[1]-2):(ultim[1]+2),lty=3,col=4)
+ts.plot(fin_whole,tl10,tu10,pr10,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2026),type="o",main="Finland long-term forecast",ylim = c(110, 180))
+abline(v=(ultim[1]-2):(ultim[1]+2),lty=3,col=4)
+ts.plot(ir_whole,tl11,tu11,pr11,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2026),type="o",main="Ireland long-term forecast",ylim = c(110, 180))
+abline(v=(ultim[1]-2):(ultim[1]+2),lty=3,col=4)
+ts.plot(den_whole,tl12,tu12,pr12,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2026),type="o",main="Denmark long-term forecast",ylim = c(110, 180))
+abline(v=(ultim[1]-2):(ultim[1]+2),lty=3,col=4)
+ts.plot(sweden_whole,tl13,tu13,pr13,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2026),type="o",main="Sweden long-term forecast",ylim = c(110, 180))
+abline(v=(ultim[1]-2):(ultim[1]+2),lty=3,col=4)
+
+ts.plot(uk_whole,tl14,tu14,pr14,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2026),type="o",main="UK long-term forecast",ylim = c(110, 180))
+abline(v=(ultim[1]-2):(ultim[1]+2),lty=3,col=4)
+
+
+ts.plot(poland_whole,tl16,tu16,pr16,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2026),type="o",main="Poland long-term forecast",ylim = c(110, 180))
+abline(v=(ultim[1]-2):(ultim[1]+2),lty=3,col=4)
+
+
+ts.plot(hungary_whole,tl17,tu17,pr17,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2026),type="o",main="Hungary long-term forecast",ylim = c(110, 180))
+abline(v=(ultim[1]-2):(ultim[1]+2),lty=3,col=4)
+ts.plot(romania_whole,tl18,tu18,pr18,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2026),type="o",main="Romania long-term forecast",ylim = c(110, 180))
+abline(v=(ultim[1]-2):(ultim[1]+2),lty=3,col=4)
+ts.plot(bulgaria_whole,tl19,tu19,pr19,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2023,2026),type="o",main="Bulgaria long-term forecast",ylim = c(110, 180))
+abline(v=(ultim[1]-2):(ultim[1]+2),lty=3,col=4)
+
+
+
+```
+
+#............
+# TABLA RESUMEN ARIMA 
+
+```{r}
+
+models <- list(
+  "PIIGS" = modpigs,
+  "Central Europe"     = modcentral,
+  "Old Non-EMU"     = modeu15no,
+  "New Non-EMU" = modnoeuronew,
+  "Eurozone"     = modeuro,
+  "Non-Eurozone"     = modnoeuro
+)
+ 
+modelsummary(models) # and keep changing the models. 
+```
+
+```{r}
+
+models_pigs <- list(
+  "Spain"     = mod1,
+  "Italy" = moditaly2,
+  "Greece"     = modgr3,
+  "Portugal"     = modp1,
+  "Ireland" = modireland, 
+  "PIIGS" = modpigs
+)
+ 
+modelsummary(models_pigs)
+```
+
+##PLOTTING DCCS TOGETHER
+
+DCC between FOUR GROUPS AND EUROPEAN MEAN. 
+```{r}
+start_date <- as.Date("2005-02-01")
+end_date <- as.Date("2024-01-01")
+date_seq <- seq.Date(from = start_date, to = end_date, by = "month")
+
+correlations <- rcor(dcc.fit_pigs_eu)
+correlations2 <- rcor(dcc.fit_central_eu)
+correlations3 <- rcor(dcc.fit_new_eu)
+correlations4 <- rcor(dcc.fit_eu15_eu)
+pigs_eu <- correlations[1,2,]
+central_eu <- correlations2[1,2,]
+new_eu <- correlations3[1,2,]
+eu15_eu <- correlations4[1,2,]
+
+plot(date_seq, pigs_eu, type = "l", col = 6, lwd = 1, xlab = "Time", ylab = "Dynamic Conditional Correlations",
+     main = "Groups vs. European mean", ylim = c(0.1, 1), xaxt = "n")
+
+lines(date_seq, central_eu, col = 3, lwd = 1)
+lines(date_seq, eu15_eu, col = 4, lwd = 1)
+lines(date_seq, new_eu, col = 5, lwd = 1)
+
+years <- seq(from = as.numeric(format(start_date, "%Y")), to = as.numeric(format(end_date, "%Y")), by = 1)
+year_dates <- as.Date(paste0(years, "-01-01"))
+axis(1, at = year_dates, labels = years, cex.axis = 0.7)
+
+legend('bottomleft', legend = c('PIIGS vs. EU', 'Central vs. EU', 'Old non-EMU vs. EU', 'New non-EMU vs. EU'), 
+       col = c(6, 3, 4, 5), lty = 1, lwd = 3, 
+       cex= 0.8)
+
+```
+
+
+```{r}
+start_date <- as.Date("2005-02-01")
+end_date <- as.Date("2024-01-01")
+date_seq <- seq.Date(from = start_date, to = end_date, by = "month")
+```
+
+```{r}
+correlations <- rcor(dcc.fit_pigs_eu)
+correlations2 <- rcor(dcc.fit_central_eu)
+correlations3 <- rcor(dcc.fit_new_eu)
+correlations4 <- rcor(dcc.fit_eu15_eu)
+pigs_eu <- correlations[1,2,]
+central_eu <- correlations2[1,2,]
+new_eu <- correlations3[1,2,]
+eu15_eu <- correlations4[1,2,]
+```
+
+
+```{r}
+plot(date_seq, pigs_eu, type = "l", col = 6, lwd = 1, xlab = "Time", ylab = "Dyanamic Conditional Correlations", main = "Groups vs. European mean", ylim=c(0.1, 1))
+lines(date_seq,central_eu, col=3, lwd=1)
+lines(date_seq,eu15_eu, col=4, lwd=1)
+lines(date_seq,new_eu, col=5,lwd=1)
+
+legend('bottomleft', legend = c('PIIGS vs. EU', 'Central vs. EU', 'Old vs. EU', 'New vs. EU'), col = c(6,3,4,5), lty = 1, lwd=3)
+```
+
+```{r}
+correlations5 <- rcor(dcc.fit_pigs_central)
+correlations6 <- rcor(dcc.fit_pigs_eu15)
+correlations7 <- rcor(dcc.fit_pigs_new)
+correlations8 <- rcor(dcc.fit_eu15no_new)
+correlations9 <- rcor(dcc.fit_central_eu15)
+correlations10 <- rcor(dcc.fit_central_new)
+
+pigs_central <- correlations5[1,2,]
+pigs_eu15 <- correlations6[1,2,]
+pigs_new<- correlations7[1,2,]
+eu15no_new <- correlations8[1,2,]
+central_eu15 <- correlations9[1,2,]
+central_new <- correlations10[1,2,]
+
+```
+
+
+```{r}
+plot(date_seq, pigs_central, type = "l", col = 1, lwd = 1, xlab = "Time", ylab = "Dyanamic Conditional Correlations", main = "Between groups", ylim=c(0.1, 1))
+lines(date_seq,pigs_eu15, col=3, lwd=1)
+lines(date_seq,pigs_new, col=4, lwd=1)
+lines(date_seq,central_eu15, col=6,lwd=1)
+lines(date_seq,central_new, col=7,lwd=1)
+
+legend('bottomleft', legend = c('PIIGS vs. Central', 'PIIGS vs. Old', 'PIIGS vs. New', 'Central vs. Old', 'Central vs. New'), col = c(1,3,4,6,7), lty = 1, lwd=3,cex=0.6)
+```
+
+
+
+```{r}
+plot(date_seq, pigs_central, type = "l", col = 1, lwd = 1, xlab = "Time", ylab = "Dynamic Conditional Correlations",
+     main = "Groups vs. European mean", ylim = c(0.1, 1), xaxt = "n")
+
+lines(date_seq,pigs_eu15, col=3, lwd=1)
+lines(date_seq,pigs_new, col=4, lwd=1)
+lines(date_seq,central_eu15, col=6,lwd=1)
+lines(date_seq,central_new, col=7,lwd=1)
+
+years <- seq(from = as.numeric(format(start_date, "%Y")), to = as.numeric(format(end_date, "%Y")), by = 1)
+year_dates <- as.Date(paste0(years, "-01-01"))
+axis(1, at = year_dates, labels = years, cex.axis = 0.7)
+
+legend('bottomleft', legend = c('PIIGS vs. Central', 'PIIGS vs. Old non-EMU', 'PIIGS vs. New non-EMU', 'Central vs. Old non-EMU', 'Central vs. New non-EMU'), col = c(1,3,4,6,7), lty = 1, lwd=3,cex=0.6)
+```
+
+
+```{r}
+correlations11 <- rcor(dcc.fit_euro_noeuro)
+euro_noeuro<- correlations11[1,2,]
+```
+
+```{r}
+plot(date_seq, euro_noeuro, type = "l", col = 4, lwd = 1, xlab = "Time", ylab = "Dyanamic Conditional Correlations", main = "Eurozone vs. Non-Eurozone", ylim=c(0.1, 1), xaxt = "n")
+years <- seq(from = as.numeric(format(start_date, "%Y")), to = as.numeric(format(end_date, "%Y")), by = 1)
+year_dates <- as.Date(paste0(years, "-01-01"))
+axis(1, at = year_dates, labels = years, cex.axis = 0.7)
+# Create custom x-axis ticks for each year
+years <- seq(from = as.numeric(format(start_date, "%Y")), to = as.numeric(format(end_date, "%Y")), by = 1)
+year_dates <- as.Date(paste0(years, "-01-01"))
+axis(1, at = year_dates, labels = years, cex.axis = 0.7)
+```
+
+# PLOT ALL SERIES TOGETHER
+
+```{r}
+plot(serie, col="hotpink",ylim=c(75, 140))
+lines(serie2,col="royalblue3" )
+lines(serie3,col="green" )
+lines(serie4,col="blueviolet" )
+lines(serie5,col="red" )
+lines(serie7,col="olivedrab4" )
+lines(serie8,col="darkslateblue" )
+lines(serie9,col="darkslategray3" )
+lines(serie10,col="lightpink" )
+lines(serie11,col="lightsalmon3" )
+lines(serie12,col="mediumspringgreen" )
+lines(serie13,col="mediumorchid" )
+lines(serie14,col="orchid4" )
+lines(serie15,col="royalblue4" )
+lines(serie16,col="plum" )
+lines(serie17,col="violet" )
+lines(serie18,col="yellow" )
+lines(serie19,col="tan2" )
+
+
+legend('topleft', legend = c('Spain', 'Italy', 'Germany', 'Greece', "France",, "Portugal", "Belgium", "Netherlands","Austria", "Finland","Ireland","Denmark","Sweden","Czech Rep.","Poland","Hungary","Romania","Bulgaria","UK"), col = c('hotpink', 'royalblue3',"green","blueviolet","red", "lightgoldenrod2","olivedrab4"), lty = 1, lwd=3)
+```
+
+```{r}
+plot(serie15, col = "hotpink", ylim = c(55, 165), type = "l", lwd = 1, ylab="Value")
+lines(serie16, col = "darkblue", lwd = 1)
+lines(serie17, col = "darkgreen", lwd = 1)
+lines(serie18, col = "brown", lwd = 1)
+lines(serie19, col="chocolate", lwd=1)
+
+
+title("New Non-EMU")
+legend("topleft", 
+       legend = c( "Czech Rep.", "Poland", "Hungary", "Romania", 
+                  "Bulgaria"),
+       col = c("hotpink","darkblue", "darkgreen", "brown", "chocolate"),
+       lty = 1, lwd = 3, 
+       cex = 0.8) # Adjusted size of legend
+```
+
+```{r}
+plot(serie, col = "darkseagreen4", ylim = c(55, 165), type = "l", lwd = 1)
+lines(serie2, col = "darkturquoise", lwd = 1)
+lines(serie4, col = "goldenrod", lwd = 1)
+lines(serie7, col = "brown", lwd = 1)
+lines(serie12, col="darkorchid", lwd=1)
+
+
+title("PIIGS")
+legend("topleft", 
+       legend = c( "Spain", "Italy", "Greece", "Portugal", 
+                  "Greece"),
+       col = c("darkseagreen4","darkturquoise", "goldenrod", "brown", "darkorchid"),
+       lty = 1, lwd = 3, 
+       cex = 0.8) # Adjusted size of legend
+```
+
+```{r}
+plot(serie13, col = "darkseagreen4", ylim = c(55, 165), type = "l", lwd = 1, ylab="Value")
+lines(serie14, col = "darkturquoise", lwd = 1)
+lines(serie20, col = "goldenrod", lwd = 1)
+
+
+title("Old Non-EMU")
+legend("topleft", 
+       legend = c( "Denmark", "Sweden", "UK"),
+       col = c("darkseagreen4","darkturquoise", "goldenrod"),
+       lty = 1, lwd = 3, 
+       cex = 0.8) # Adjusted size of legend
+```
+
+```{r}
+plot(serie5, col = "darkseagreen4", ylim = c(55, 165), type = "l", lwd = 1)
+lines(serie3, col = "darkturquoise", lwd = 1)
+lines(serie8, col = "goldenrod", lwd = 1)
+lines(serie9, col = "brown", lwd = 1)
+lines(serie10, col="darkorchid", lwd=1)
+lines(serie11, col="hotpink", lwd=1)
+
+title("Central Europe")
+legend("topleft", 
+       legend = c( "France", "Germany", "Belgium", "The Netherlands", 
+                  "Austria","Finland"),
+       col = c("darkseagreen4","darkturquoise", "goldenrod", "brown", "hotpink"),
+       lty = 1, lwd = 3, 
+       cex = 0.8) # Adjusted size of legend
+```
+
+```{r}
+plot(serie_euro, col = "goldenrod", ylim = c(55, 165), type = "l", lwd = 1, ylab="Value")
+lines(serie_noeuro, col = "brown", lwd = 1)
+
+title("Groups distinguishing by currency")
+legend("topleft", 
+       legend = c( "Eurozone", "Non-Eurozone"),
+       col = c("goldenrod", "brown"),
+       lty = 1, lwd = 3, 
+       cex = 0.8) # Adjusted size of legend
+```
+
+
